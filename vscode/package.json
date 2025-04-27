@@ -1,0 +1,31 @@
+{
+  "name": "dzdbgport",
+  "displayName": "DayZ Debug Port",
+  "description": "Simple extension to view DayZ logs.",
+  "version": "0.0.1",
+  "categories": [
+      "Other"
+  ],
+  "engines": {
+      "vscode": "^1.99.1"
+  },
+  "main": "./out/extension.js",
+  "contributes": {
+      "commands": [
+          {
+              "command": "dayzDebugger.showLog",
+              "title": "DayZ: Show Log"
+          }
+      ]
+  },
+  "scripts": {
+      "vscode:prepublish": "npm run compile",
+      "compile": "tsc -p ./",
+      "watch": "tsc -w -p ./"
+  },
+  "devDependencies": {
+      "@types/vscode": "^1.99.1",
+      "@vscode/vsce": "^3.3.2",
+      "typescript": "^5.2.0"
+  }
+}
