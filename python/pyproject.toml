@@ -1,5 +1,5 @@
 [project]
-name = "python-dzdbgport"
+name = "dzdbgport"
 version = "0.9"
 description = ""
 authors = [
