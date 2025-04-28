@@ -7,6 +7,8 @@ import sys
 import datetime
 import argparse
 
+from pathlib import Path
+
 from dataclasses import dataclass
 
 from prompt_toolkit import PromptSession
@@ -105,7 +107,7 @@ class ConsoleInterface:
 
 
 class SocketBuffer:
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, log_data: bool):
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, log_dir: Path | None = None):
         self.read_offset = 0
         self.reader = reader
         self.writer = writer  # NEW
@@ -115,10 +117,11 @@ class SocketBuffer:
         self.read_lock = asyncio.Lock()
         self.write_lock = asyncio.Lock()
 
-        self.log_data = log_data
-        if log_data:
-            self.raw_log = open("data.bin.txt", "wb")
-            self.format_log = open("data.format.txt", "w", encoding="utf-8")
+        if log_dir:
+            self.raw_log = (log_dir / "data.bin.txt").open("wb")
+            self.format_log = (log_dir / "data.format.txt").open("w", encoding="utf-8")
+        else:
+            self.raw_log = self.format_log = None
 
     async def start(self):
         try:
@@ -126,8 +129,7 @@ class SocketBuffer:
                 data = await self.reader.read(4096)
                 if not data:
                     break
-                if self.log_data:
-                    self._log_received(data)
+                self._log_received(data)
                 self._store(data)
         except Exception as e:
             logging.error(f"Socket read error: {e}")
@@ -135,12 +137,14 @@ class SocketBuffer:
             self.close()
 
     def _log_received(self, data: bytes):
-        self.raw_log.write(data)
-        self.raw_log.flush()
+        if self.raw_log:
+            self.raw_log.write(data)
+            self.raw_log.flush()
 
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        self.format_log.write(f"{timestamp} [RECV] 0x{len(data):X} {repr(data)}\n")
-        self.format_log.flush()
+        if self.format_log:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            self.format_log.write(f"{timestamp} [RECV] 0x{len(data):X} {repr(data)}\n")
+            self.format_log.flush()
 
     def _store(self, data: bytes):
         self.buffer.extend(data)
@@ -166,22 +170,22 @@ class SocketBuffer:
         return data
 
     def _log_sent(self, data: bytes):
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        self.format_log.write(f"{timestamp} [SENT] 0x{len(data):X} {repr(data)}\n")
-        self.format_log.flush()
+        if self.format_log:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            self.format_log.write(f"{timestamp} [SENT] 0x{len(data):X} {repr(data)}\n")
+            self.format_log.flush()
 
     async def write(self, data: bytes):
         async with self.write_lock:
             self.writer.write(data)
             await self.writer.drain()
-
-        if self.log_data:
-            self._log_sent(data)
+        self._log_sent(data)
 
     def close(self):
         self.closed = True
-        if self.log_data:
+        if self.raw_log:
             self.raw_log.close()
+        if self.format_log:
             self.format_log.close()
         self.data_event.set()
     
@@ -193,9 +197,8 @@ DZ_MESSAGE_REGISTRY: dict[int, type[DZBaseMsg]] = {}
 
 
 class DayZProtocol:
-    def __init__(self, buffer: SocketBuffer, verbose: bool = False):
+    def __init__(self, buffer: SocketBuffer):
         self.buffer = buffer
-        self.verbose = verbose
         self.wlock = asyncio.Lock()
 
     # === Read helpers ===
@@ -456,7 +459,8 @@ class DZLogMsg(DZBaseMsg):
 
 
 class DayZDebugPort:
-    def __init__(self, protocol: DayZProtocol):
+    def __init__(self, addr, protocol: DayZProtocol):
+        self.addr = addr
         self.protocol = protocol
         self.running = True
         self.blocks: dict[int, DZBlockLoadMsg] = {}
@@ -515,6 +519,13 @@ class DayZDebugPort:
         return await self.protocol.send(DZRecompileMsg(block_id=block_id, file_index=file_index))
 
 
+class DayZPortListener:
+    async def on_port_connected(self, port: DayZDebugPort):
+        pass
+
+    async def on_port_disconnected(self, port: DayZDebugPort):
+        pass
+
 def dzcli(name=None):
     def decorator(func):
         func._is_command = True
@@ -523,21 +534,36 @@ def dzcli(name=None):
     return decorator
 
 
-class DayZDebugConsole:
-    def __init__(self, port: DayZDebugPort, console: ConsoleInterface):
-        self.port = port
+class DayZDebugConsole(DayZPortListener):
+    def __init__(self, console: ConsoleInterface):
+        self._port: DayZDebugPort = None
         self.console = console
         self._register_commands()
 
+    async def on_port_connected(self, port):
+        if self._port:
+            raise ValueError("double port")
+        self._port = port
+
+        # run after registering
+        await port.run()
+    
+    async def on_port_disconnected(self, port):
+        raise ValueError("now wut")
+
+    @property
+    def port(self) -> DayZDebugPort:
+        if not self._port:
+            raise ValueError("no connected port")
+        return self._port
+
     def _register_commands(self):
         for attr_name in dir(self):
-            attr = getattr(self, attr_name)
-            if callable(attr) and getattr(attr, "_is_command", False):
-                cmd_name = attr._command_name
-                self.console.register_command(cmd_name, attr)
-
-    async def run(self):
-        await self.port.run()
+            if attr_name.startswith("cmd_"):
+                attr = getattr(self, attr_name)
+                if callable(attr) and getattr(attr, "_is_command", False):
+                    cmd_name = attr._command_name
+                    self.console.register_command(cmd_name, attr)
 
     @dzcli()
     async def cmd_diag(self, args):
@@ -579,22 +605,21 @@ class DayZDebugConsole:
             await self.port.recompile(block_id=block.block_id, file_index=file_index)
 
 
-async def handle_client(reader, writer, log_data: bool, console: ConsoleInterface, verbose: bool):
-    buffer = SocketBuffer(reader, writer, log_data=log_data)
-    protocol = DayZProtocol(buffer, verbose=verbose)
-    port = DayZDebugPort(protocol)
-    debug_console = DayZDebugConsole(port, console)
+async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, listener: DayZPortListener, log_dir: Path | None = None):
+    buffer = SocketBuffer(reader, writer, log_dir=log_dir)
+    protocol = DayZProtocol(buffer)
+    port = DayZDebugPort(addr=writer.get_extra_info('peername'), protocol=protocol)
     
-    logging.info(f"Client connected: {writer.get_extra_info('peername')}")
-
-    await asyncio.gather(
+    logging.info(f"dayz port connected {port.addr}")
+    await asyncio.gather(*[
         buffer.start(),
-        debug_console.run()
-    )
+        listener.on_port_connected(port),
+    ])
 
+    logging.info(f"dayz port disconnect {port.addr}")
+    await listener.on_port_disconnected(port)
     writer.close()
     await writer.wait_closed()
-    logging.info("Client disconnected")
 
 
 async def mock_client(path="data.bin.txt"):
@@ -652,22 +677,23 @@ async def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
 
+
+    tasks = []
+
     console = ConsoleInterface()
+    listener = DayZDebugConsole(console)
+    tasks.append(console.run())
+
+    log_dir = None if args.mock else Path(".")
+    server = await asyncio.start_server(lambda r, w: handle_client(r, w, listener=listener, log_dir=log_dir), "0.0.0.0", DZDEBUGPORT)
+    tasks.append(server.serve_forever())
 
     if args.mock:
-        server = await asyncio.start_server(lambda r, w: handle_client(r, w, log_data=False, console=console, verbose=args.verbose), "0.0.0.0", DZDEBUGPORT)
-    else:
-        server = await asyncio.start_server(lambda r, w: handle_client(r, w, log_data=True, console=console, verbose=args.verbose), "0.0.0.0", DZDEBUGPORT)
+        tasks.append(mock_client())
+
     logging.info(f"Listening on port {DZDEBUGPORT}")
 
     async with server:
-        tasks = [server.start_serving()]
-        if args.mock:
-            tasks.append(mock_client())
-        else:
-            tasks.append(server.serve_forever())
-        tasks.append(console.run())
-
         try:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:

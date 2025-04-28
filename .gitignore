@@ -1,5 +1,8 @@
+__pycache__
 vscode/node_modules/
 vscode/out/
 vscode/dist/
 vscode/.vscode-test/
 vscode/package-lock.json
+python/dayzdebug.log
+python/data*.txt
