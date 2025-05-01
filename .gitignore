@@ -8,4 +8,5 @@ python/dayzdebug.log
 python/data*.txt
 python/build/
 python/dist/
-python/dzdbgport-server.spec
+python/dzdbgport.spec
+python/.build_hash
