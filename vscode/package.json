@@ -1,31 +1,45 @@
 {
-  "name": "dzdbgport",
-  "displayName": "DayZ Debug Port",
-  "description": "Simple extension to view DayZ logs.",
-  "version": "0.0.1",
-  "categories": [
-      "Other"
-  ],
-  "engines": {
-      "vscode": "^1.99.1"
-  },
-  "main": "./out/extension.js",
-  "contributes": {
-      "commands": [
-          {
-              "command": "dayzDebugger.showLog",
-              "title": "DayZ: Show Log"
-          }
-      ]
-  },
-  "scripts": {
-      "vscode:prepublish": "npm run compile",
-      "compile": "tsc -p ./",
-      "watch": "tsc -w -p ./"
-  },
-  "devDependencies": {
-      "@types/vscode": "^1.99.1",
-      "@vscode/vsce": "^3.3.2",
-      "typescript": "^5.2.0"
-  }
+    "name": "dzdbgport",
+    "displayName": "DayZ Debug Port",
+    "description": "Simple extension to view DayZ logs.",
+    "version": "0.0.1",
+    "categories": [
+        "Other"
+    ],
+    "engines": {
+        "vscode": "^1.99.1"
+    },
+    "main": "./out/extension.js",
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "contributes": {
+        "commands": [
+            {
+                "command": "dzdbgport.viewLogs",
+                "title": "DayZ Debug Port: View Logs"
+            },
+            {
+                "command": "dzdbgport.restartServer",
+                "title": "DayZ Debug Port: Restart Server"
+            }
+        ]
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -w -p ./",
+        "build:exe": "cd ../python && python build_exe.py",
+        "postinstall": "npm run build:exe && cpx ../python/dist/dzdbgport.exe ./bin/"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.99.1",
+        "@types/ws": "^8.18.1",
+        "@vscode/vsce": "^3.3.2",
+        "cpx": "^1.5.0",
+        "typescript": "^5.2.0"
+    },
+    "dependencies": {
+        "ws": "^8.18.1"
+    }
 }
