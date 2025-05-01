@@ -6,3 +6,6 @@ vscode/.vscode-test/
 vscode/package-lock.json
 python/dayzdebug.log
 python/data*.txt
+python/build/
+python/dist/
+python/dzdbgport-server.spec

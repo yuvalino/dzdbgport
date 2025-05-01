@@ -1,17 +1,18 @@
-[project]
+[tool.poetry]
 name = "dzdbgport"
-version = "0.9"
+version = "0.1.0"
 description = ""
-authors = [
-    {name = "yuval",email = "yuvalino@gmail.com"}
-]
+authors = ["Yuval <yuvalino@gmail.com>"]
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = [
-    "prompt-toolkit (>=3.0.51,<4.0.0)"
-]
 
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+prompt-toolkit = "^3.0.51"
+websockets = "^15.0.1"
+
+[tool.poetry.group.dev.dependencies]
+pyinstaller = "^6.13.0"
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
+requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
