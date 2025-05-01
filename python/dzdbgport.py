@@ -6,6 +6,7 @@ import struct
 import sys
 import datetime
 import argparse
+import websockets
 
 from pathlib import Path
 
@@ -46,6 +47,7 @@ from prompt_toolkit.shortcuts import print_formatted_text
 
 
 DZDEBUGPORT = 1000
+WSPORT = 28051
 
 
 class ConsoleInterface:
@@ -605,6 +607,61 @@ class DayZDebugConsole(DayZPortListener):
             await self.port.recompile(block_id=block.block_id, file_index=file_index)
 
 
+class WebSocketServer:
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+        self.clients = set()
+
+    async def handler(self, websocket):
+        logging.info(f"Client connected: {websocket.remote_address}")
+        self.clients.add(websocket)
+        try:
+            async for message in websocket:
+                logging.info(f"Received: {message}")
+                await self.on_message(websocket, message)
+        except websockets.ConnectionClosed:
+            logging.info(f"Client disconnected: {websocket.remote_address}")
+        finally:
+            self.clients.remove(websocket)
+
+    async def on_message(self, websocket, message):
+        # Echo the message back (or handle custom logic)
+        await websocket.send(f"Echo: {message}")
+
+    async def broadcast(self, message: str):
+        if self.clients:
+            await asyncio.gather(*(client.send(message) for client in self.clients))
+
+    async def run(self):
+        logging.info(f"Running WebSocket server on ws://{self.host}:{self.port}")
+        async with websockets.serve(self.handler, self.host, self.port):
+            await asyncio.Future()  # run forever
+
+
+class DayZDebugWebSocketServer(DayZPortListener):
+    def __init__(self, server: WebSocketServer):
+        self._port: DayZDebugPort = None
+        self.server = server
+
+    async def on_port_connected(self, port):
+        if self._port:
+            raise ValueError("double port")
+        self._port = port
+
+        # run after registering
+        await port.run()
+    
+    async def on_port_disconnected(self, port):
+        raise ValueError("now wut")
+
+    @property
+    def port(self) -> DayZDebugPort:
+        if not self._port:
+            raise ValueError("no connected port")
+        return self._port
+
+
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, listener: DayZPortListener, log_dir: Path | None = None):
     buffer = SocketBuffer(reader, writer, log_dir=log_dir)
     protocol = DayZProtocol(buffer)
@@ -675,14 +732,19 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mock", action="store_true", help="Run mock client using data.bin.txt")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
+    parser.add_argument("--ws", nargs="?", const=WSPORT, type=int, default=None, help=f"Enable WebSocket server. Optional port (default: {WSPORT})")
     args = parser.parse_args()
-
 
     tasks = []
 
-    console = ConsoleInterface()
-    listener = DayZDebugConsole(console)
-    tasks.append(console.run())
+    if args.ws:
+        server = WebSocketServer(host="0.0.0.0", port=args.ws)
+        listener = DayZDebugWebSocketServer(server)
+        tasks.append(server.run())
+    else:
+        console = ConsoleInterface()
+        listener = DayZDebugConsole(console)
+        tasks.append(console.run())
 
     log_dir = None if args.mock else Path(".")
     server = await asyncio.start_server(lambda r, w: handle_client(r, w, listener=listener, log_dir=log_dir), "0.0.0.0", DZDEBUGPORT)
