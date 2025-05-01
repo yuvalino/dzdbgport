@@ -48,7 +48,7 @@ from prompt_toolkit.shortcuts import print_formatted_text
 
 DZDEBUGPORT = 1000
 WSPORT = 28051
-
+LOGFILE = Path(".") / "dayzdebug.log"
 
 class ConsoleInterface:
     def __init__(self, ps1: str = "dz$ "):
@@ -704,44 +704,52 @@ class PromptToolkitHandler(logging.Handler):
         print_formatted_text(msg)
 
 
-def setup_logging(log_file="dayzdebug.log", verbose=False):
+def setup_logging(log_prompt: bool, log_file: Path | None):
     # Clear existing handlers
     logging.root.handlers.clear()
 
     level = logging.INFO
 
     # Console logging (via prompt_toolkit)
-    console_handler = PromptToolkitHandler()
-    console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    console_handler.setLevel(level)
-    logging.root.addHandler(console_handler)
+    if log_prompt:
+        console_handler = PromptToolkitHandler()
+        console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        console_handler.setLevel(level)
+        logging.root.addHandler(console_handler)
+    else:
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        stdout_handler.setLevel(level)
+        logging.root.addHandler(stdout_handler)
 
     # File logging
-    file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
-    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    file_handler.setLevel(level)
-    logging.root.addHandler(file_handler)
+    if log_file:
+        file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+        file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        file_handler.setLevel(level)
+        logging.root.addHandler(file_handler)
 
     # Set global level
     logging.root.setLevel(level)
 
 
 async def main():
-    setup_logging()
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--mock", action="store_true", help="Run mock client using data.bin.txt")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("--ws", nargs="?", const=WSPORT, type=int, default=None, help=f"Enable WebSocket server. Optional port (default: {WSPORT})")
+    parser.add_argument("--log-file", nargs="?", const=LOGFILE, default=None, help=f"Enable log to file. Optional filename (default: {LOGFILE})")
     args = parser.parse_args()
 
     tasks = []
 
     if args.ws:
+        setup_logging(False, log_file=args.log_file)
         server = WebSocketServer(host="0.0.0.0", port=args.ws)
         listener = DayZDebugWebSocketServer(server)
         tasks.append(server.run())
     else:
+        setup_logging(True, log_file=args.log_file)
         console = ConsoleInterface()
         listener = DayZDebugConsole(console)
         tasks.append(console.run())
