@@ -1,15 +1,17 @@
 import * as vscode from "vscode";
 import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import * as path from "path";
+import WebSocket from "ws";
 
 let serverProcess: ChildProcessWithoutNullStreams | null = null;
+let socket: WebSocket | null = null;
 let outputChannel: vscode.OutputChannel;
 
-function log_plugin(msg: string, end: string = "\n") {
+function logPlugin(msg: string, end: string = "\n") {
     outputChannel.append(`[plugin ] ${msg}${end}`)
 }
 
-function log_port(msg: string, end: string = "\n") {
+function logPort(msg: string, end: string = "\n") {
     outputChannel.append(`[dbgport] ${msg}${end}`)
 }
 
@@ -17,35 +19,122 @@ async function cleanupOrphanProcesses(): Promise<void> {
     return new Promise((resolve) => {
         const killer = spawn("taskkill", ["/IM", "dzdbgport.exe", "/F", "/T"]);
         killer.on("exit", () => {
-            log_plugin(`[INFO] taskkill complete.`);
+            logPlugin(`[INFO] taskkill complete.`);
             serverProcess = null;
             resolve();
         });
 
         killer.on("error", (err) => {
-            log_plugin(`[ERROR] Failed to run taskkill: ${err.message}`);
+            logPlugin(`[ERROR] Failed to run taskkill: ${err.message}`);
             serverProcess = null;
             resolve();
         });
     });
 }
 
+function onWebSocketMessage(msg: any) {
+    if (msg.type === "connect") {
+        logPlugin(`[WS] Game connected (pid: ${msg.pid})`);
+        vscode.window.showInformationMessage(`🟢 DayZ Game Connected (PID: ${msg.pid})`);
+    } else if (msg.type === "disconnect") {
+        logPlugin(`[WS] Game disconnected (pid: ${msg.pid}, reason: ${msg.reason})`);
+        if (msg.reason === "exit") {
+            vscode.window.showInformationMessage(`🟡 DayZ Game Disconnected (PID: ${msg.pid})`);
+        }
+        else if (msg.reason === "crash") {
+            vscode.window.showWarningMessage(`🔴 DayZ Game Crashed (PID: ${msg.pid})`);
+        }
+        else {
+            vscode.window.showWarningMessage(`🔴 DayZ Game Unknown Exit Reason (PID: ${msg.pid}, Reason: ${msg.reason})`);
+        }
+    }
+}
+
+function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
+    const wsUrl = "ws://localhost:28051";
+    let startTime = Date.now();
+    let connected = false;
+    let errorShown = false;
+
+    logPlugin("[WS] Connecting to server...");
+
+    function tryConnect() {
+        if (connected || Date.now() - startTime > maxWaitMs) {
+            if (!connected && !errorShown) {
+                logPlugin("[WS] Failed to connect to server after retrying.");
+                vscode.window.showErrorMessage("❌ Could not connect to DayZ debug server.");
+                errorShown = true;
+            }
+            return;
+        }
+
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            logPlugin("[WS] Connected to server.");
+            connected = true;
+            socket = ws;
+
+            ws.onerror = (err) => {
+                logPlugin("[WS] WebSocket error.");
+                console.error(err);
+            };
+        
+            ws.onclose = () => {
+                logPlugin("[WS] WebSocket disconnected.");
+                socket = null;
+            };
+        };
+
+        ws.onmessage = (event) => {
+            const raw = event.data;
+            const text = typeof raw === "string" ? raw : raw.toString();
+            const msg = JSON.parse(text);
+
+            onWebSocketMessage(msg);
+        };
+
+        ws.onerror = () => {
+            // do nothing here, retry silently
+        };
+
+        ws.onclose = () => {
+            if (!connected) {
+                setTimeout(tryConnect, retryMs); // retry
+            } else {
+                logPlugin("[WS] WebSocket disconnected.");
+                socket = null;
+            }
+        };
+    }
+
+    tryConnect();
+}
+
+
+function disconnectWebSocket() {
+    if (socket) {
+        logPlugin("[WS] Disconnecting from server...");
+        socket.close();
+        socket = null;
+    }
+}
 
 function startServer(context: vscode.ExtensionContext) {
     if (serverProcess) {
-        log_plugin("[INFO] Server already running.");
+        logPlugin("[INFO] Server already running.");
         return;
     }
 
     const exePath = path.join(context.extensionPath, "bin", "dzdbgport.exe");
-    log_plugin(`[INFO] Starting server from: ${exePath}`);
+    logPlugin(`[INFO] Starting server from: ${exePath}`);
 
     serverProcess = spawn(exePath, ["--ws"], { cwd: path.dirname(exePath) });
 
     serverProcess.stdout.on("data", (data) => {
         data.toString().split(/\r?\n/).forEach((line: string) => {
             if (line.trim() !== "") {
-                log_port(line);
+                logPort(line);
             }
         });
     });
@@ -53,27 +142,31 @@ function startServer(context: vscode.ExtensionContext) {
     serverProcess.stderr.on("data", (data) => {
         data.toString().split(/\r?\n/).forEach((line: string) => {
             if (line.trim() !== "") {
-                log_port(`[stderr] ${line}`);
+                logPort(`[stderr] ${line}`);
             }
         });
     });
 
     serverProcess.on("close", (code) => {
-        log_plugin(`[INFO] Server exited with code ${code}`);
+        logPlugin(`[INFO] Server exited with code ${code}`);
         serverProcess = null;
     });
 
     serverProcess.on("error", (err) => {
-        log_plugin(`[ERROR] Failed to start server: ${err.message}`);
+        logPlugin(`[ERROR] Failed to start server: ${err.message}`);
         serverProcess = null;
     });
+
+    connectWebSocket()
 }
 
 async function stopServer() {
+    disconnectWebSocket();
+
     if (!serverProcess || serverProcess.killed) return;
 
     const pid = serverProcess.pid;
-    log_plugin(`[INFO] Force-killing server process with PID ${pid}`);
+    logPlugin(`[INFO] Force-killing server process with PID ${pid}`);
 
     await cleanupOrphanProcesses();
 
