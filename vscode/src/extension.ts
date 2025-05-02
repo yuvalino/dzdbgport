@@ -13,6 +13,24 @@ function log_port(msg: string, end: string = "\n") {
     outputChannel.append(`[dbgport] ${msg}${end}`)
 }
 
+async function cleanupOrphanProcesses(): Promise<void> {
+    return new Promise((resolve) => {
+        const killer = spawn("taskkill", ["/IM", "dzdbgport.exe", "/F", "/T"]);
+        killer.on("exit", () => {
+            log_plugin(`[INFO] taskkill complete.`);
+            serverProcess = null;
+            resolve();
+        });
+
+        killer.on("error", (err) => {
+            log_plugin(`[ERROR] Failed to run taskkill: ${err.message}`);
+            serverProcess = null;
+            resolve();
+        });
+    });
+}
+
+
 function startServer(context: vscode.ExtensionContext) {
     if (serverProcess) {
         log_plugin("[INFO] Server already running.");
@@ -51,27 +69,15 @@ function startServer(context: vscode.ExtensionContext) {
     });
 }
 
-async function stopServer(): Promise<void> {
-    return new Promise((resolve) => {
-        if (!serverProcess || serverProcess.killed) return;
+async function stopServer() {
+    if (!serverProcess || serverProcess.killed) return;
 
-        const pid = serverProcess.pid;
-        log_plugin(`[INFO] Force-killing server process with PID ${pid}`);
+    const pid = serverProcess.pid;
+    log_plugin(`[INFO] Force-killing server process with PID ${pid}`);
 
-        const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"]);
+    await cleanupOrphanProcesses();
 
-        killer.on("exit", () => {
-            log_plugin(`[INFO] taskkill complete.`);
-            serverProcess = null;
-            resolve();
-        });
-
-        killer.on("error", (err) => {
-            log_plugin(`[ERROR] Failed to run taskkill: ${err.message}`);
-            serverProcess = null;
-            resolve();
-        });
-    });
+    // TODO wait for server process to die
 }
 
 async function restartServer(context: vscode.ExtensionContext) {
@@ -80,10 +86,11 @@ async function restartServer(context: vscode.ExtensionContext) {
     startServer(context);
 }
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel("DayZ Debug Port");
     context.subscriptions.push(outputChannel);
 
+    await cleanupOrphanProcesses();
     startServer(context);
 
     context.subscriptions.push(
