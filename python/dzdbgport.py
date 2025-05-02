@@ -607,27 +607,58 @@ class DayZDebugConsole(DayZPortListener):
             await self.port.recompile(block_id=block.block_id, file_index=file_index)
 
 
+class WebSocketListener:
+    async def on_websocket_connected(self, websocket: websockets.ServerConnection):
+        pass
+
+    async def on_websocket_disconnected(self, websocket: websockets.ServerConnection):
+        pass
+
+    async def on_websocket_message(self, websocket: websockets.ServerConnection, message: str):
+        pass
+
+
 class WebSocketServer:
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
         self.clients = set()
+        self.listeners: dict[int, WebSocketListener] = dict()
+        self.next_idx = 0
 
-    async def handler(self, websocket):
+    def add_listener(self, listener: WebSocketListener) -> int:
+        idx = self.next_idx
+        self.listeners[idx] = listener
+        self.next_idx += 1
+        return idx
+    
+    def remove_listener(self, idx: int):
+        del self.listeners[idx]
+
+    async def _handler(self, websocket: websockets.ServerConnection):
         logging.info(f"Client connected: {websocket.remote_address}")
         self.clients.add(websocket)
+        for listener in self.listeners.values():
+            await listener.on_websocket_connected(websocket)
+
         try:
             async for message in websocket:
                 logging.info(f"Received: {message}")
-                await self.on_message(websocket, message)
+                for listener in self.listeners.values():
+                    if await listener.on_websocket_message(websocket, message):
+                        break
         except websockets.ConnectionClosed:
             logging.info(f"Client disconnected: {websocket.remote_address}")
         finally:
+            for listener in self.listeners.values():
+                await listener.on_websocket_disconnected(websocket)
             self.clients.remove(websocket)
 
-    async def on_message(self, websocket, message):
-        # Echo the message back (or handle custom logic)
-        await websocket.send(f"Echo: {message}")
+    async def _on_message(self, websocket, message):
+        # send to all handlers until someone returns True
+        for handler in self.handlers.values():
+            if handler(websocket, message):
+                break
 
     async def broadcast(self, message: str):
         if self.clients:
@@ -635,16 +666,16 @@ class WebSocketServer:
 
     async def run(self):
         logging.info(f"Running WebSocket server on ws://{self.host}:{self.port}")
-        async with websockets.serve(self.handler, self.host, self.port):
+        async with websockets.serve(self._handler, self.host, self.port):
             await asyncio.Future()  # run forever
 
 
-class DayZDebugWebSocketServer(DayZPortListener):
+class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
     def __init__(self, server: WebSocketServer):
         self._port: DayZDebugPort = None
         self.server = server
 
-    async def on_port_connected(self, port):
+    async def on_port_connected(self, port: DayZDebugPort):
         if self._port:
             raise ValueError("double port")
         self._port = port
@@ -652,8 +683,17 @@ class DayZDebugWebSocketServer(DayZPortListener):
         # run after registering
         await port.run()
     
-    async def on_port_disconnected(self, port):
+    async def on_port_disconnected(self, port: DayZDebugPort):
         raise ValueError("now wut")
+
+    async def on_websocket_connected(self, websocket: websockets.ServerConnection):
+        print("wsc")
+
+    async def on_websocket_disconnected(self, websocket: websockets.ServerConnection):
+        print("wsdc")
+
+    async def on_websocket_message(self, websocket: websockets.ServerConnection, message: str):
+        print("wsm")
 
     @property
     def port(self) -> DayZDebugPort:
@@ -747,6 +787,7 @@ async def main():
         setup_logging(False, log_file=args.log_file)
         server = WebSocketServer(host="0.0.0.0", port=args.ws)
         listener = DayZDebugWebSocketServer(server)
+        server.add_listener(listener)
         tasks.append(server.run())
     else:
         setup_logging(True, log_file=args.log_file)
