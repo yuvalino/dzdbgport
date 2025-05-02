@@ -754,7 +754,7 @@ async def main():
         listener = DayZDebugConsole(console)
         tasks.append(console.run())
 
-    log_dir = None if args.mock else Path(".")
+    log_dir = None if args.mock else (None if not args.log_file else Path(args.log_file).parent)
     server = await asyncio.start_server(lambda r, w: handle_client(r, w, listener=listener, log_dir=log_dir), "0.0.0.0", DZDEBUGPORT)
     tasks.append(server.serve_forever())
 
