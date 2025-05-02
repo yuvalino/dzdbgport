@@ -4,6 +4,7 @@ import asyncio
 import logging
 import struct
 import sys
+import json
 import datetime
 import argparse
 import websockets
@@ -84,6 +85,7 @@ class ConsoleInterface:
         handler = self.command_handlers.get(cmd)
         if not handler:
             print(f"ERROR: unknown command '{cmd}', try 'help'")
+            return
 
         try:
             await handler(args)
@@ -130,11 +132,19 @@ class SocketBuffer:
             while not self.closed:
                 data = await self.reader.read(4096)
                 if not data:
+                    logging.info("Connection closed by peer.")
                     break
                 self._log_received(data)
                 self._store(data)
+        except (asyncio.IncompleteReadError, ConnectionResetError):
+            logging.info("Connection closed by peer.")
+        except OSError as e:
+            if e.winerror == 64:
+                logging.info("Connection closed by peer.")
+            else:
+                logging.error(f"Socket read error: {e}")
         except Exception as e:
-            logging.error(f"Socket read error: {e}")
+            logging.error(f"Unexpected socket read error: {e}")
         finally:
             self.close()
 
@@ -460,13 +470,34 @@ class DZLogMsg(DZBaseMsg):
         return cls(data=data)
 
 
+class DayZPortListener:
+    async def on_port_connected(self, port: DayZDebugPort):
+        pass
+
+    async def on_port_disconnected(self, port: DayZDebugPort):
+        pass
+
+    async def on_port_message(self, port: DayZDebugPort, msg: DZBaseMsg):
+        pass
+
+
 class DayZDebugPort:
     def __init__(self, addr, protocol: DayZProtocol):
         self.addr = addr
         self.protocol = protocol
         self.running = True
-        self.blocks: dict[int, DZBlockLoadMsg] = {}
+        self.blocks: dict[int, DZBlockLoadMsg] = dict()
+        self.pid = -1
+        
+        self.listeners: dict[int, DayZPortListener] = dict()
+        self.next_idx = 0
     
+    def add_listener(self, listener: DayZPortListener) -> int:
+        idx = self.next_idx
+        self.listeners[idx] = listener
+        self.next_idx += 1
+        return idx
+
     async def run(self):
         while self.running and not self.protocol.buffer.closed:
             try:
@@ -481,10 +512,15 @@ class DayZDebugPort:
     
     async def handle_msg(self, msg: DZBaseMsg):
         match msg:
+            case DZHelloMsg():
+                self.pid = msg.game_pid
             case DZBlockLoadMsg():
                 await self.load_block(msg)
             case DZBlockUnloadMsg():
                 await self.unload_block(msg)
+        
+        for listener in self.listeners.values():
+            await listener.on_port_message(self, msg)
     
     async def load_block(self, msg: DZBlockLoadMsg):
         if msg.block_id in self.blocks:
@@ -520,13 +556,6 @@ class DayZDebugPort:
     async def recompile(self, block_id: int, file_index: int):
         return await self.protocol.send(DZRecompileMsg(block_id=block_id, file_index=file_index))
 
-
-class DayZPortListener:
-    async def on_port_connected(self, port: DayZDebugPort):
-        pass
-
-    async def on_port_disconnected(self, port: DayZDebugPort):
-        pass
 
 def dzcli(name=None):
     def decorator(func):
@@ -631,9 +660,6 @@ class WebSocketServer:
         self.listeners[idx] = listener
         self.next_idx += 1
         return idx
-    
-    def remove_listener(self, idx: int):
-        del self.listeners[idx]
 
     async def _handler(self, websocket: websockets.ServerConnection):
         logging.info(f"Client connected: {websocket.remote_address}")
@@ -672,41 +698,79 @@ class WebSocketServer:
 
 class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
     def __init__(self, server: WebSocketServer):
-        self._port: DayZDebugPort = None
         self.server = server
+        self.ports: dict[int, DayZDebugPort] = dict()
+
+    async def _send_or_broadcast(self, websocket: websockets.ServerConnection | None, message_json: dict):
+        message = json.dumps(message_json)
+        if websocket:
+            await websocket.send(message)
+        else:
+            await self.server.broadcast(message)
+
+    async def _send_ws_connect(self, websocket: websockets.ServerConnection | None, game_pid: int):
+        await self._send_or_broadcast(websocket, {
+            "type": "connect",
+            "pid": game_pid,
+        })
+    
+    async def _send_ws_disconnect(self, websocket: websockets.ServerConnection | None, game_pid: int, reason: str):
+       await self._send_or_broadcast(websocket, {
+            "type": "disconnect",
+            "pid": game_pid,
+            "reason": reason,
+        })
 
     async def on_port_connected(self, port: DayZDebugPort):
-        if self._port:
-            raise ValueError("double port")
-        self._port = port
+        tcp_port = port.addr[1]
+        if tcp_port in self.ports:
+            logging.warning(f"game tcp port {tcp_port} already connected")
+        self.ports[tcp_port] = port
 
         # run after registering
         await port.run()
     
     async def on_port_disconnected(self, port: DayZDebugPort):
-        raise ValueError("now wut")
+        tcp_port = port.addr[1]
+        if tcp_port not in self.ports:
+            logging.warning(f"unknown game port {tcp_port} disconnected")
+            return
+
+        del self.ports[tcp_port]
+        # did not send exit, probably crashed
+        await self._send_ws_disconnect(None, port.pid, "crash")
+
+    async def on_port_message(self, port: DayZDebugPort, msg: DZBaseMsg):
+        match msg:
+            case DZHelloMsg():
+                await self._send_ws_connect(None, msg.game_pid)
+            case DZExitMsg():
+                await self._send_ws_disconnect(None, port.pid, "exit")
+                tcp_port = port.addr[1]
+                if tcp_port not in self.ports:
+                    logging.warning(f"unknown game port {tcp_port} exited")
+                    return
+
+                del self.ports[tcp_port]
 
     async def on_websocket_connected(self, websocket: websockets.ServerConnection):
-        print("wsc")
+        for port in self.ports.values():
+            if port.pid != -1:
+                await self._send_ws_connect(websocket, port.pid)
 
     async def on_websocket_disconnected(self, websocket: websockets.ServerConnection):
         print("wsdc")
 
     async def on_websocket_message(self, websocket: websockets.ServerConnection, message: str):
-        print("wsm")
-
-    @property
-    def port(self) -> DayZDebugPort:
-        if not self._port:
-            raise ValueError("no connected port")
-        return self._port
+        print(f"wsm {message}")
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, listener: DayZPortListener, log_dir: Path | None = None):
     buffer = SocketBuffer(reader, writer, log_dir=log_dir)
     protocol = DayZProtocol(buffer)
     port = DayZDebugPort(addr=writer.get_extra_info('peername'), protocol=protocol)
-    
+    port.add_listener(listener)
+
     logging.info(f"dayz port connected {port.addr}")
     await asyncio.gather(*[
         buffer.start(),
