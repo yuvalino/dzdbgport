@@ -11,7 +11,7 @@ import websockets
 
 from pathlib import Path
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -409,6 +409,7 @@ class DZBlockLoadMsg(DZBaseMsg):
 class DZBlockUnloadMsg(DZBaseMsg):
     tag = PROTO_DZ_UNBLOCK
     block_id: int
+    filenames: list[str] = field(default_factory=list)  # populated afterwards by DayZDebugPort before on_port_message()
 
     @classmethod
     async def decode(cls, proto: DayZProtocol) -> DZBlockUnloadMsg:
@@ -417,7 +418,7 @@ class DZBlockUnloadMsg(DZBaseMsg):
 
         logging.info(f"[RECV] [UNBLOCK  ] block_id={hex(block_id)}")
 
-        return cls(block_id=block_id)
+        return cls(block_id=block_id, filenames=[])
 
 
 @dzmsg
@@ -517,7 +518,10 @@ class DayZDebugPort:
             case DZBlockLoadMsg():
                 await self.load_block(msg)
             case DZBlockUnloadMsg():
-                await self.unload_block(msg)
+                block = await self.unload_block(msg)
+                # populate msg.filenames if possible
+                if block:
+                    msg.filenames = block.filenames
         
         for listener in self.listeners.values():
             await listener.on_port_message(self, msg)
@@ -527,11 +531,11 @@ class DayZDebugPort:
             logging.warning(f"duplicate block_id {hex(msg.block_id)}")
         self.blocks[msg.block_id] = msg
     
-    async def unload_block(self, msg: DZBlockUnloadMsg):
-        if msg.block_id in self.blocks:
-            del self.blocks[msg.block_id]
-        else:
+    async def unload_block(self, msg: DZBlockUnloadMsg) -> DZBlockLoadMsg | None:
+        block = self.blocks.pop(msg.block_id, None)
+        if not block:
             logging.warning(f"unknown block_id {hex(msg.block_id)}")
+        return block
 
     def find_block_and_index_for_filename(self, filename: str) -> tuple[DZBlockLoadMsg, int]:
         for block_id, block in self.blocks.items():
@@ -727,6 +731,20 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
             "reason": reason,
         })
     
+    async def _send_ws_block_load(self, websocket: websockets.ServerConnection | None, block_id: int, filenames: list[str]):
+        await self._send_or_broadcast(websocket, {
+            "type": "block_load",
+            "block_id": block_id,
+            "filenames": filenames,
+        })
+    
+    async def _send_ws_block_unload(self, websocket: websockets.ServerConnection | None, block_id: int, filenames: list[str]):
+        await self._send_or_broadcast(websocket, {
+            "type": "block_unload",
+            "block_id": block_id,
+            "filenames": filenames,
+        })
+
     async def _receive_ws(self, websocket: websockets.ServerConnection, type: str, message_json: dict):
         match type:
             case "execCode":
@@ -766,6 +784,10 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
                     return
 
                 del self.ports[tcp_port]
+            case DZBlockLoadMsg():
+                await self._send_ws_block_load(None, msg.block_id, msg.filenames)
+            case DZBlockUnloadMsg():
+                await self._send_ws_block_unload(None, msg.block_id, msg.filenames)
 
     async def on_websocket_connected(self, websocket: websockets.ServerConnection):
         for port in self.ports.values():

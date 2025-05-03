@@ -8,6 +8,8 @@ let socket: WebSocket | null = null;
 let outputChannel: vscode.OutputChannel;
 let gameConnected = false;
 let execCodeViewProvider: ExecCodeViewProvider;
+let decorationProvider: LoadedFileDecorationProvider;
+const loadedFiles = new Set<string>();
 
 function logPlugin(msg: string, end: string = "\n") {
     outputChannel.append(`[plugin ] ${msg}${end}`)
@@ -88,6 +90,23 @@ function onWebSocketMessage(msg: any) {
         else {
             vscode.window.showWarningMessage(`🔴 DayZ Game Unknown Exit Reason (PID: ${msg.pid}, Reason: ${msg.reason})`);
         }
+    }
+    else if (msg.type === "block_load") {
+        logPlugin(`[WS] Block loaded (id 0x${msg.block_id.toString(16)}, ${msg.filenames.length} files)`)
+        for (const file of msg.filenames) {
+            loadedFiles.add(file);
+        }
+        decorationProvider.notifyChange();
+    }
+    else if (msg.type === "block_unload") {
+        logPlugin(`[WS] Block unloaded (id 0x${msg.block_id.toString(16)}, ${msg.filenames.length} files)`)
+        for (const file of msg.filenames) {
+            loadedFiles.delete(file);
+        }
+        decorationProvider.notifyChange();
+    }
+    else {
+        logPlugin(`[WS] [WARN] Unknown message type ${msg.type}`)
     }
 }
 
@@ -400,6 +419,40 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
     }
 }
 
+class LoadedFileDecorationProvider implements vscode.FileDecorationProvider {
+    private _onDidChangeFileDecorations = new vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined>();
+    readonly onDidChangeFileDecorations = this._onDidChangeFileDecorations.event;
+
+    provideFileDecoration(uri: vscode.Uri): vscode.ProviderResult<vscode.FileDecoration> {
+        const fsPath = uri.fsPath.toLowerCase();
+
+        // Dynamically resolve expected fsPaths from current dataPath
+        const dataPath = pluginConfig().dataPath;
+        const possibleMatches = new Set<string>();
+
+        for (const rawPath of loadedFiles) {
+            const resolved = path.isAbsolute(rawPath)
+                ? path.normalize(rawPath).toLowerCase()
+                : path.resolve(dataPath, rawPath).toLowerCase();
+
+            possibleMatches.add(resolved);
+        }
+
+        if (possibleMatches.has(fsPath)) {
+            return {
+                badge: "🟣",
+                tooltip: "Loaded by DayZ Debug Server"
+            };
+        }
+
+        return undefined;
+    }
+
+    notifyChange() {
+        this._onDidChangeFileDecorations.fire(undefined); // Refresh all
+    }
+}
+
 export async function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel("DayZ Debug Port");
     context.subscriptions.push(outputChannel);
@@ -425,6 +478,18 @@ export async function activate(context: vscode.ExtensionContext) {
             execCodeViewProvider
         )
     );
+
+    decorationProvider = new LoadedFileDecorationProvider();
+    context.subscriptions.push(
+        vscode.window.registerFileDecorationProvider(decorationProvider)
+    );
+
+    // Watch for config changes (like dataPath)
+    vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration("dzdbgport.dataPath")) {
+            decorationProvider.notifyChange(); // Refresh all loaded file markings
+        }
+    });
 
     await cleanupOrphanProcesses();
     startServer(context);
