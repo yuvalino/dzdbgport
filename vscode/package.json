@@ -16,6 +16,10 @@
     "contributes": {
         "commands": [
             {
+                "command": "dzdbgport.dumpDiag",
+                "title": "DayZ Debug Port: Dump Diagnostics"
+            },
+            {
                 "command": "dzdbgport.toggleDebugPort",
                 "title": "DayZ Debug Port: Toggle (Enable/Disable) Debug Port"
             },

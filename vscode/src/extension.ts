@@ -545,6 +545,30 @@ async function refreshDebugPortEnablement(context: vscode.ExtensionContext)
     }
 }
 
+async function dumpDiag(context: vscode.ExtensionContext) {
+    const lines = [];
+    lines.push(`# DayZ Debug Port Diagnostics`);
+    lines.push(`timestamp: ${new Date().toISOString()}`);
+    lines.push(`config.enableDebugPort: ${pluginConfig().enableDebugPort}`)
+    lines.push(`config.dataPath: ${pluginConfig().dataPath}`);
+    lines.push(`serverProcess.pid: ${serverProcess?.pid}`);
+    lines.push(`gameConnected: ${gameConnected}`);
+    lines.push(`loadedFiles.size: ${loadedFiles.size}`)
+    if (loadedFiles.size > 0) {
+        lines.push(`loadedFiles:`);
+        for (const file of Array.from(loadedFiles).sort()) {
+            lines.push(`- name: ${file}`);
+        }
+    }
+
+    const content = lines.join("\n");
+    const doc = await vscode.workspace.openTextDocument({
+        content,
+        language: "plaintext"
+    });
+    await vscode.window.showTextDocument(doc, { preview: false });
+}
+
 export async function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel("DayZ Debug Port");
     context.subscriptions.push(outputChannel);
@@ -553,6 +577,10 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(gameLogChannel);
 
     context.subscriptions.push(
+        vscode.commands.registerCommand("dzdbgport.dumpDiag", async () => {
+            await dumpDiag(context);
+        }),
+
         vscode.commands.registerCommand("dzdbgport.toggleDebugPort", async () => {
             await toggleDebugPort();
         }),
