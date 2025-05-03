@@ -9,6 +9,14 @@ let outputChannel: vscode.OutputChannel;
 let gameConnected = false;
 let execCodeViewProvider: ExecCodeViewProvider;
 
+function logPlugin(msg: string, end: string = "\n") {
+    outputChannel.append(`[plugin ] ${msg}${end}`)
+}
+
+function logPort(msg: string, end: string = "\n") {
+    outputChannel.append(`[dbgport] ${msg}${end}`)
+}
+
 function webviewPostMessage(message: any) {
     if (execCodeViewProvider && execCodeViewProvider.view) {
         execCodeViewProvider.view.webview.postMessage(message);
@@ -18,14 +26,6 @@ function webviewPostMessage(message: any) {
 function updateExecButtonState() {
     const enabled = (socket && socket.readyState === WebSocket.OPEN && gameConnected);
     webviewPostMessage({ type: "executeEnabled", enabled: enabled });
-}
-
-function logPlugin(msg: string, end: string = "\n") {
-    outputChannel.append(`[plugin ] ${msg}${end}`)
-}
-
-function logPort(msg: string, end: string = "\n") {
-    outputChannel.append(`[dbgport] ${msg}${end}`)
 }
 
 async function cleanupOrphanProcesses(): Promise<void> {
@@ -128,7 +128,7 @@ function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
         };
 
         ws.onerror = () => {
-            // do nothing here, retry silently
+            // do nothing here, retry silently (onclose called soon after)
         };
 
         ws.onclose = () => {
@@ -226,7 +226,6 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
         _token: vscode.CancellationToken
     ) {
         this.view = webviewView;
-
         webviewView.webview.options = {
             enableScripts: true
         };
@@ -248,12 +247,19 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
                 }
             }
         });
-
         
-        // Add a way to externally call "focus input"
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                updateExecButtonState();
+            }
+        });
+
         vscode.commands.registerCommand("dzdbgport.execCodeView.focus", () => {
+            webviewView.show?.(true);
             webviewView.webview.postMessage({ type: "focusExecInput" });
         });
+
+        updateExecButtonState();
     }
   
     private getHtml(): string {
@@ -401,7 +407,7 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    execCodeViewProvider = new ExecCodeViewProvider(context.extensionUri);    
+    execCodeViewProvider = new ExecCodeViewProvider(context.extensionUri);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(
             ExecCodeViewProvider.viewType,
