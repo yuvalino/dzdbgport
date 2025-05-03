@@ -19,6 +19,12 @@ function logPort(msg: string, end: string = "\n") {
     outputChannel.append(`[dbgport] ${msg}${end}`)
 }
 
+function clearLoadedFiles(): void {
+    loadedFiles.clear();
+    decorationProvider.notifyChange();
+    logPlugin("[WS] Cleared loaded file list");
+}
+
 interface PluginConfig {
     dataPath: string;
 }
@@ -80,6 +86,7 @@ function onWebSocketMessage(msg: any) {
 
         gameConnected = false;
         updateExecButtonState();
+        clearLoadedFiles();
 
         if (msg.reason === "exit") {
             vscode.window.showInformationMessage(`🟡 DayZ Game Disconnected (PID: ${msg.pid})`);
@@ -92,6 +99,11 @@ function onWebSocketMessage(msg: any) {
         }
     }
     else if (msg.type === "block_load") {
+        if (msg.filenames.length == 1 && msg.filenames[0] === "execCode") {
+            logPlugin(`[WS] Code executed successfully (id 0x${msg.block_id.toString(16)})`);
+            return;
+        }
+
         logPlugin(`[WS] Block loaded (id 0x${msg.block_id.toString(16)}, ${msg.filenames.length} files)`)
         for (const file of msg.filenames) {
             loadedFiles.add(file);
@@ -99,6 +111,10 @@ function onWebSocketMessage(msg: any) {
         decorationProvider.notifyChange();
     }
     else if (msg.type === "block_unload") {
+        if (msg.filenames.length == 1 && msg.filenames[0] === "execCode") {
+            return;
+        }
+
         logPlugin(`[WS] Block unloaded (id 0x${msg.block_id.toString(16)}, ${msg.filenames.length} files)`)
         for (const file of msg.filenames) {
             loadedFiles.delete(file);
@@ -135,6 +151,7 @@ function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
             connected = true;
             socket = ws;
             updateExecButtonState();
+            clearLoadedFiles();
 
             ws.onerror = (err) => {
                 logPlugin("[WS] WebSocket error.");
@@ -146,6 +163,7 @@ function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
                 socket = null;
                 gameConnected = false;
                 updateExecButtonState();
+                clearLoadedFiles();
             };
         };
 
@@ -169,6 +187,7 @@ function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
                 socket = null;
                 gameConnected = false;
                 updateExecButtonState();
+                clearLoadedFiles();
             }
         };
     }
@@ -440,8 +459,10 @@ class LoadedFileDecorationProvider implements vscode.FileDecorationProvider {
 
         if (possibleMatches.has(fsPath)) {
             return {
-                badge: "🟣",
-                tooltip: "Loaded by DayZ Debug Server"
+                badge: "Z",
+                tooltip: "Loaded by DayZ",
+                color: new vscode.ThemeColor("dzdbgport.loadedFileColor"),
+                propagate: true,
             };
         }
 

@@ -46,7 +46,18 @@
                     "description": "Path to DayZ data folder (e.g. PBO root, mission files, etc.)"
                 }
             }
-        }
+        },
+        "colors": [
+            {
+                "id": "dzdbgport.loadedFileColor",
+                "description": "Text color for files loaded by DayZ Debug Server",
+                "defaults": {
+                    "light": "#800080",
+                    "dark": "#c084fc",
+                    "highContrast": "#ff00ff"
+                }
+            }
+        ]
     },
     "scripts": {
         "vscode:prepublish": "npm run compile",
