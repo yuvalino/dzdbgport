@@ -26,6 +26,10 @@
             {
                 "command": "dzdbgport.focusExecInput",
                 "title": "DayZ Debug Port: Focus on Exec Code"
+            },
+            {
+                "command": "dzdbgport.recompileFile",
+                "title": "DayZ Debug Port: Recompile File in DayZ"
             }
         ],
         "views": {
@@ -56,6 +60,22 @@
                     "dark": "#c084fc",
                     "highContrast": "#ff00ff"
                 }
+            }
+        ],
+        "menus": {
+            "explorer/context": [
+                {
+                    "command": "dzdbgport.recompileFile",
+                    "group": "dzdbgport@1",
+                    "when": "resourceExtname == .c"
+                }
+            ]
+        },
+        "keybindings": [
+            {
+                "command": "dzdbgport.recompileFile",
+                "key": "ctrl+f7",
+                "when": "editorTextFocus"
             }
         ]
     },

@@ -458,6 +458,8 @@ class LoadedFileDecorationProvider implements vscode.FileDecorationProvider {
         }
 
         if (possibleMatches.has(fsPath)) {
+            vscode.commands.executeCommand("setContext", "dzdbgport.isLoadedFile", true);
+
             return {
                 badge: "Z",
                 tooltip: "Loaded by DayZ",
@@ -472,6 +474,23 @@ class LoadedFileDecorationProvider implements vscode.FileDecorationProvider {
     notifyChange() {
         this._onDidChangeFileDecorations.fire(undefined); // Refresh all
     }
+}
+
+function findLoadedFileForUri(uri: vscode.Uri): string | null {
+    const input = path.normalize(uri.fsPath).toLowerCase();
+    const dataPath = pluginConfig().dataPath;
+
+    for (const rawPath of loadedFiles) {
+        const cleaned = path.normalize(rawPath.replace(/\//g, path.sep));
+        const full = path.isAbsolute(cleaned)
+            ? cleaned
+            : path.resolve(dataPath, cleaned);
+        if (path.normalize(full).toLowerCase() === input) {
+            return rawPath;
+        }
+    }
+
+    return null;
 }
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -489,6 +508,30 @@ export async function activate(context: vscode.ExtensionContext) {
 
         vscode.commands.registerCommand("dzdbgport.focusExecInput", () => {
             vscode.commands.executeCommand('dzdbgport.execCodeView.focus');
+        }),
+
+        vscode.commands.registerCommand("dzdbgport.recompileFile", async (uri?: vscode.Uri) => {
+            if (!uri && vscode.window.activeTextEditor) {
+                uri = vscode.window.activeTextEditor.document.uri;
+            }
+        
+            if (!uri) {
+                return;
+            }
+
+            const loadedFile = findLoadedFileForUri(uri);
+            if (!loadedFile) {
+                logPlugin(`Cannot recompile file ${uri.fsPath} because it isn't loaded by the game`);
+            }
+            
+            if (sendWebSocketMessage({ type: "recompile", filename: loadedFile })) {
+                logPlugin(`Recompiling ${uri.fsPath}`);
+                vscode.window.showInformationMessage(`🛠️ Recompiling "${path.basename(uri.fsPath)}"...`);
+            }
+            else {
+                logPlugin(`Could not recompile ${uri.fsPath}, game not connected`);
+                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}}": Game is not connected.`);
+            }
         })
     );
 

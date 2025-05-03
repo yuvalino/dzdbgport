@@ -673,7 +673,6 @@ class WebSocketServer:
 
         try:
             async for message in websocket:
-                logging.info(f"Received: {message}")
                 for listener in self.listeners.values():
                     if await listener.on_websocket_message(websocket, message):
                         break
@@ -750,6 +749,11 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
             case "execCode":
                 logging.info("got execCode from websocket")
                 await self.current_port.exec_code(module=message_json["module"], code=message_json["code"])
+            case "recompile":
+                filename = message_json["filename"]
+                block, index = self.current_port.find_block_and_index_for_filename(filename)
+                logging.info(f"recompiling filename \"{filename}\" at block {hex(block.block_id)} index {index}")
+                await self.current_port.recompile(block.block_id, index)
             case _:
                 raise ValueError(f"unknown message type \"{type}\"")
 
