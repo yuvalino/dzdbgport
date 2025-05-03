@@ -16,8 +16,16 @@
     "contributes": {
         "commands": [
             {
-                "command": "dzdbgport.viewLogs",
-                "title": "DayZ Debug Port: View Logs"
+                "command": "dzdbgport.toggleDebugPort",
+                "title": "DayZ Debug Port: Toggle (Enable/Disable) Debug Port"
+            },
+            {
+                "command": "dzdbgport.viewOutput",
+                "title": "DayZ Debug Port: View Output"
+            },
+            {
+                "command": "dzdbgport.viewGameLogs",
+                "title": "DayZ Debug Port: View Game Logs"
             },
             {
                 "command": "dzdbgport.restartServer",
@@ -44,6 +52,11 @@
         "configuration": {
             "title": "DayZ Debug Port",
             "properties": {
+                "dzdbgport.enableDebugPort": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable or disable the DayZ Debug Port plugin"
+                },
                 "dzdbgport.dataPath": {
                     "type": "string",
                     "default": "P:\\",

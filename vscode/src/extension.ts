@@ -6,6 +6,7 @@ import WebSocket from "ws";
 let serverProcess: ChildProcessWithoutNullStreams | null = null;
 let socket: WebSocket | null = null;
 let outputChannel: vscode.OutputChannel;
+let gameLogChannel: vscode.OutputChannel;
 let gameConnected = false;
 let execCodeViewProvider: ExecCodeViewProvider;
 let decorationProvider: LoadedFileDecorationProvider;
@@ -27,12 +28,14 @@ function clearLoadedFiles(): void {
 
 interface PluginConfig {
     dataPath: string;
+    enableDebugPort: boolean;
 }
 
 function pluginConfig(): PluginConfig {
     const config = vscode.workspace.getConfiguration("dzdbgport");
     return {
-        dataPath: config.get<string>("dataPath", "P:\\")!,
+        dataPath:        config.get<string>("dataPath", "P:\\")!,
+        enableDebugPort: config.get<boolean>("enableDebugPort", true)!,
     };
 }
 
@@ -120,6 +123,10 @@ function onWebSocketMessage(msg: any) {
             loadedFiles.delete(file);
         }
         decorationProvider.notifyChange();
+    }
+    else if (msg.type === "log") {
+        const text = msg.data;
+        gameLogChannel.append(text.endsWith('\n') ? text : text + '\n');
     }
     else {
         logPlugin(`[WS] [WARN] Unknown message type ${msg.type}`)
@@ -493,24 +500,77 @@ function findLoadedFileForUri(uri: vscode.Uri): string | null {
     return null;
 }
 
+async function toggleDebugPort()
+{
+    const config = vscode.workspace.getConfiguration("dzdbgport");
+    const targetState = !config.get<boolean>("enableDebugPort", true);
+    await config.update("enableDebugPort", targetState, vscode.ConfigurationTarget.Global);
+    if (targetState) {
+        vscode.window.showInformationMessage(`🟢 DayZ Debug Port Enabled`);
+    }
+    else {
+        vscode.window.showInformationMessage(`🔴 DayZ Debug Port Disabled`);
+    }
+}
+
+async function ensurePluginEnabled(): Promise<boolean> {
+    logPlugin(`what ${pluginConfig().enableDebugPort}`);
+    if (pluginConfig().enableDebugPort) {
+        return true;
+    }
+
+    const result = await vscode.window.showWarningMessage(
+        "DayZ Debug Port plugin is currently disabled. Do you want to enable it?",
+        "Enable", "Cancel"
+    );
+
+    // re-check if debug port is disabled
+    if (result === "Enable" && !pluginConfig().enableDebugPort) {
+        await toggleDebugPort();
+    }
+
+    return false;
+}
+
 export async function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel("DayZ Debug Port");
     context.subscriptions.push(outputChannel);
 
+    gameLogChannel = vscode.window.createOutputChannel("DayZ Log");
+    context.subscriptions.push(gameLogChannel);
+
     context.subscriptions.push(
-        vscode.commands.registerCommand("dzdbgport.viewLogs", () => {
+        vscode.commands.registerCommand("dzdbgport.toggleDebugPort", async () => {
+            await toggleDebugPort();
+        }),
+
+        vscode.commands.registerCommand("dzdbgport.viewOutput", () => {
             outputChannel.show(true);
         }),
 
-        vscode.commands.registerCommand("dzdbgport.restartServer", () => {
-            restartServer(context);
+        vscode.commands.registerCommand("dzdbgport.viewGameLogs", () => {
+            gameLogChannel.show(true);
         }),
 
-        vscode.commands.registerCommand("dzdbgport.focusExecInput", () => {
+        vscode.commands.registerCommand("dzdbgport.restartServer", async () => {
+            // if plugin has started, no need to restart the server
+            if (await ensurePluginEnabled()) {
+                await restartServer(context);
+            }
+        }),
+
+        vscode.commands.registerCommand("dzdbgport.focusExecInput", async () => {
+            if (!pluginConfig().enableDebugPort) {
+                return;
+            }
             vscode.commands.executeCommand('dzdbgport.execCodeView.focus');
         }),
 
         vscode.commands.registerCommand("dzdbgport.recompileFile", async (uri?: vscode.Uri) => {
+            if (!pluginConfig().enableDebugPort) {
+                return ;
+            }
+
             if (!uri && vscode.window.activeTextEditor) {
                 uri = vscode.window.activeTextEditor.document.uri;
             }

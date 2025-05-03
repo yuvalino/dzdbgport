@@ -743,6 +743,12 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
             "block_id": block_id,
             "filenames": filenames,
         })
+    
+    async def _send_ws_log(self, websocket: websockets.ServerConnection | None, data: str):
+        await self._send_or_broadcast(websocket, {
+            "type": "log",
+            "data": data,
+        })
 
     async def _receive_ws(self, websocket: websockets.ServerConnection, type: str, message_json: dict):
         match type:
@@ -792,6 +798,8 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
                 await self._send_ws_block_load(None, msg.block_id, msg.filenames)
             case DZBlockUnloadMsg():
                 await self._send_ws_block_unload(None, msg.block_id, msg.filenames)
+            case DZLogMsg():
+                await self._send_ws_log(None, msg.data)
 
     async def on_websocket_connected(self, websocket: websockets.ServerConnection):
         for port in self.ports.values():
