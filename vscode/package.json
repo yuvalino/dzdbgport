@@ -22,6 +22,10 @@
             {
                 "command": "dzdbgport.restartServer",
                 "title": "DayZ Debug Port: Restart Server"
+            },
+            {
+                "command": "dzdbgport.focusExecInput",
+                "title": "DayZ Debug Port: Focus on Exec Code"
             }
         ],
         "views": {

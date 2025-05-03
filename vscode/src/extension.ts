@@ -234,7 +234,7 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
         webviewView.webview.html = this.getHtml();
   
         webviewView.webview.onDidReceiveMessage(async (message) => {
-            if (message.command === 'exec') {
+            if (message.type === "exec") {
                 const code = message.code;
                 if (!code) {
                     return;
@@ -247,6 +247,12 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
                     vscode.window.showErrorMessage("❌ Cannot execute code: Game is not connected.");
                 }
             }
+        });
+
+        
+        // Add a way to externally call "focus input"
+        vscode.commands.registerCommand("dzdbgport.execCodeView.focus", () => {
+            webviewView.webview.postMessage({ type: "focusExecInput" });
         });
     }
   
@@ -338,10 +344,20 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
                         vscode.setState({ code:codeBox.value });
                     });
 
-                    execBtn.addEventListener("click", () => {
+                    function execCode() {
                         const code = codeBox.value;
                         vscode.setState({ code });  // Save code for future sessions
-                        vscode.postMessage({ command: "exec", code });
+                        vscode.postMessage({ type: "exec", code });
+                    }
+                    execBtn.addEventListener("click", execCode);
+
+                    codeBox.addEventListener("keydown", (event) => {
+                        if (event.key === "Enter" && event.ctrlKey) {
+                            if (!execBtn.disabled) {
+                                execCode();
+                                event.preventDefault();
+                            }
+                        }
                     });
 
                     window.addEventListener("message", (event) => {
@@ -355,6 +371,9 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
                                 execBtn.disabled = true;
                                 execBtnWrapper.title = "Game is not connected";
                             }
+                        }
+                        else if (msg.type === "focusExecInput") {
+                            codeBox.focus();
                         }
                     });
                 </script>
@@ -376,6 +395,10 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand("dzdbgport.restartServer", () => {
             restartServer(context);
         }),
+
+        vscode.commands.registerCommand("dzdbgport.focusExecInput", () => {
+            vscode.commands.executeCommand('dzdbgport.execCodeView.focus');
+        })
     );
 
     execCodeViewProvider = new ExecCodeViewProvider(context.extensionUri);    
