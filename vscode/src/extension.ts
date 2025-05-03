@@ -532,6 +532,18 @@ async function ensurePluginEnabled(): Promise<boolean> {
     return false;
 }
 
+async function refreshDebugPortEnablement()
+{
+    if (pluginConfig().enableDebugPort) {
+        logPlugin("[CONFIG] Debug port enabled");
+        vscode.commands.executeCommand("setContext", "dzdbgport.enableDebugPort", true);
+    }
+    else {
+        logPlugin("[CONFIG] Debug port disabled");
+        vscode.commands.executeCommand("setContext", "dzdbgport.enableDebugPort", false);
+    }
+}
+
 export async function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel("DayZ Debug Port");
     context.subscriptions.push(outputChannel);
@@ -609,11 +621,16 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     // Watch for config changes (like dataPath)
-    vscode.workspace.onDidChangeConfiguration((event) => {
+    vscode.workspace.onDidChangeConfiguration(async (event) =>{
         if (event.affectsConfiguration("dzdbgport.dataPath")) {
             decorationProvider.notifyChange(); // Refresh all loaded file markings
         }
+
+        if (event.affectsConfiguration("dzdbgport.enableDebugPort")) {
+            await refreshDebugPortEnablement();
+        }
     });
+    await refreshDebugPortEnablement();
 
     await cleanupOrphanProcesses();
     startServer(context);
