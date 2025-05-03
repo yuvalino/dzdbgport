@@ -323,11 +323,24 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
                 <script>
                     const vscode = acquireVsCodeApi();
 
+                    const codeBox = document.getElementById("code");
                     const execBtn = document.getElementById("execBtn");
                     const execBtnWrapper = document.getElementById("execBtnWrapper");
 
+                    // Restore state
+                    const prevState = vscode.getState();
+                    if (prevState && prevState.code) {
+                        codeBox.value = prevState.code;
+                    }
+
+                    // Also update state on input for live saving
+                    codeBox.addEventListener("input", () => {
+                        vscode.setState({ code:codeBox.value });
+                    });
+
                     execBtn.addEventListener("click", () => {
-                        const code = document.getElementById("code").value;
+                        const code = codeBox.value;
+                        vscode.setState({ code });  // Save code for future sessions
                         vscode.postMessage({ command: "exec", code });
                     });
 
