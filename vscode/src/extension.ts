@@ -17,6 +17,17 @@ function logPort(msg: string, end: string = "\n") {
     outputChannel.append(`[dbgport] ${msg}${end}`)
 }
 
+interface PluginConfig {
+    dataPath: string;
+}
+
+function pluginConfig(): PluginConfig {
+    const config = vscode.workspace.getConfiguration("dzdbgport");
+    return {
+        dataPath: config.get<string>("dataPath", "P:\\")!,
+    };
+}
+
 function webviewPostMessage(message: any) {
     if (execCodeViewProvider && execCodeViewProvider.view) {
         execCodeViewProvider.view.webview.postMessage(message);

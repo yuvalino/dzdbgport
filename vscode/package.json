@@ -36,6 +36,16 @@
                     "type": "webview"
                 }
             ]
+        },
+        "configuration": {
+            "title": "DayZ Debug Port",
+            "properties": {
+                "dzdbgport.dataPath": {
+                    "type": "string",
+                    "default": "P:\\",
+                    "description": "Path to DayZ data folder (e.g. PBO root, mission files, etc.)"
+                }
+            }
         }
     },
     "scripts": {
