@@ -528,15 +528,20 @@ async function ensurePluginEnabled(): Promise<boolean> {
     return false;
 }
 
-async function refreshDebugPortEnablement()
+async function refreshDebugPortEnablement(context: vscode.ExtensionContext)
 {
     if (pluginConfig().enableDebugPort) {
         logPlugin("[CONFIG] Debug port enabled");
         vscode.commands.executeCommand("setContext", "dzdbgport.enableDebugPort", true);
+
+        await cleanupOrphanProcesses();
+        startServer(context);
     }
     else {
         logPlugin("[CONFIG] Debug port disabled");
         vscode.commands.executeCommand("setContext", "dzdbgport.enableDebugPort", false);
+
+        await stopServer();
     }
 }
 
@@ -625,13 +630,12 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         if (event.affectsConfiguration("dzdbgport.enableDebugPort")) {
-            await refreshDebugPortEnablement();
+            await refreshDebugPortEnablement(context);
         }
     });
-    await refreshDebugPortEnablement();
+    await refreshDebugPortEnablement(context);
 
-    await cleanupOrphanProcesses();
-    startServer(context);
+    // server is started from `refreshDebugPortEnablement()`
 }
 
 export async function deactivate(): Promise<void> {
