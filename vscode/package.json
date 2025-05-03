@@ -23,7 +23,16 @@
                 "command": "dzdbgport.restartServer",
                 "title": "DayZ Debug Port: Restart Server"
             }
-        ]
+        ],
+        "views": {
+            "explorer": [
+                {
+                    "id": "dzdbgport.execCodeView",
+                    "name": "DayZ Debug Port",
+                    "type": "webview"
+                }
+            ]
+        }
     },
     "scripts": {
         "vscode:prepublish": "npm run compile",

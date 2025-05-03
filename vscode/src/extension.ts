@@ -6,6 +6,19 @@ import WebSocket from "ws";
 let serverProcess: ChildProcessWithoutNullStreams | null = null;
 let socket: WebSocket | null = null;
 let outputChannel: vscode.OutputChannel;
+let gameConnected = false;
+let execCodeViewProvider: ExecCodeViewProvider;
+
+function webviewPostMessage(message: any) {
+    if (execCodeViewProvider && execCodeViewProvider.view) {
+        execCodeViewProvider.view.webview.postMessage(message);
+    }
+}
+
+function updateExecButtonState() {
+    const enabled = (socket && socket.readyState === WebSocket.OPEN && gameConnected);
+    webviewPostMessage({ type: "executeEnabled", enabled: enabled });
+}
 
 function logPlugin(msg: string, end: string = "\n") {
     outputChannel.append(`[plugin ] ${msg}${end}`)
@@ -32,12 +45,29 @@ async function cleanupOrphanProcesses(): Promise<void> {
     });
 }
 
+function sendWebSocketMessage(msg: any): boolean {
+    if (socket && socket.readyState === socket.OPEN) {
+        socket.send(JSON.stringify(msg));
+        return true;
+    }
+
+    return false;
+}
+
 function onWebSocketMessage(msg: any) {
     if (msg.type === "connect") {
         logPlugin(`[WS] Game connected (pid: ${msg.pid})`);
+
+        gameConnected = true;
+        updateExecButtonState();
+
         vscode.window.showInformationMessage(`🟢 DayZ Game Connected (PID: ${msg.pid})`);
     } else if (msg.type === "disconnect") {
         logPlugin(`[WS] Game disconnected (pid: ${msg.pid}, reason: ${msg.reason})`);
+
+        gameConnected = false;
+        updateExecButtonState();
+
         if (msg.reason === "exit") {
             vscode.window.showInformationMessage(`🟡 DayZ Game Disconnected (PID: ${msg.pid})`);
         }
@@ -74,6 +104,7 @@ function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
             logPlugin("[WS] Connected to server.");
             connected = true;
             socket = ws;
+            updateExecButtonState();
 
             ws.onerror = (err) => {
                 logPlugin("[WS] WebSocket error.");
@@ -83,6 +114,8 @@ function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
             ws.onclose = () => {
                 logPlugin("[WS] WebSocket disconnected.");
                 socket = null;
+                gameConnected = false;
+                updateExecButtonState();
             };
         };
 
@@ -104,6 +137,8 @@ function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
             } else {
                 logPlugin("[WS] WebSocket disconnected.");
                 socket = null;
+                gameConnected = false;
+                updateExecButtonState();
             }
         };
     }
@@ -179,12 +214,146 @@ async function restartServer(context: vscode.ExtensionContext) {
     startServer(context);
 }
 
+export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
+    public static readonly viewType = 'dzdbgport.execCodeView';
+    public view?: vscode.WebviewView;
+  
+    constructor(private readonly _extensionUri: vscode.Uri) {}
+  
+    resolveWebviewView(
+        webviewView: vscode.WebviewView,
+        _context: vscode.WebviewViewResolveContext,
+        _token: vscode.CancellationToken
+    ) {
+        this.view = webviewView;
+
+        webviewView.webview.options = {
+            enableScripts: true
+        };
+  
+        webviewView.webview.html = this.getHtml();
+  
+        webviewView.webview.onDidReceiveMessage(async (message) => {
+            if (message.command === 'exec') {
+                const code = message.code;
+                if (!code) {
+                    return;
+                }
+
+                if (sendWebSocketMessage({ type: "execCode", module: "World", code: code })) {
+                    vscode.window.showInformationMessage(`🚀 Executing code...`);
+                }
+                else {
+                    vscode.window.showErrorMessage("❌ Cannot execute code: Game is not connected.");
+                }
+            }
+        });
+    }
+  
+    private getHtml(): string {
+        return /*html*/`
+        <!DOCTYPE html>
+        <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <style>
+                    body {
+                        color: var(--vscode-foreground);
+                        background-color: var(--vscode-editor-background);
+                        font-family: var(--vscode-editor-font-family);
+                        font-size: var(--vscode-editor-font-size);
+                        padding: 10px;
+                    }
+    
+                    textarea {
+                        width: 100%;
+                        padding: 8px;
+                        background-color: var(--vscode-input-background);
+                        color: var(--vscode-input-foreground);
+                        border: 1px solid var(--vscode-input-border);
+                        border-radius: 4px;
+                        font-family: var(--vscode-editor-font-family);
+                        font-size: var(--vscode-editor-font-size);
+                        box-sizing: border-box;
+                        resize: vertical;
+                        min-height: 2.25em;
+                    }
+    
+                    textarea::placeholder {
+                        color: var(--vscode-input-placeholderForeground);
+                    }
+    
+                    button {
+                        margin-top: 10px;
+                        padding: 6px 12px;
+                        background-color: var(--vscode-button-background);
+                        color: var(--vscode-button-foreground);
+                        border: none;
+                        border-radius: 4px;
+                        cursor: pointer;
+                        font-family: var(--vscode-editor-font-family);
+                        font-size: var(--vscode-editor-font-size);
+                    }
+    
+                    button:hover {
+                        background-color: var(--vscode-button-hoverBackground);
+                    }
+
+                    button:disabled {
+                        background-color: var(--vscode-button-disabledBackground, #444);
+                        color: var(--vscode-disabledForeground, #888);
+                        cursor: not-allowed;
+                        opacity: 0.6;
+                    }
+
+                    button:disabled:hover {
+                        background-color: var(--vscode-button-disabledBackground, #444); /* no hover change */
+                    }
+
+                    #execBtnWrapper {
+                        display: inline-block;
+                    }
+                </style>
+            </head>
+            <body>
+                <textarea id="code" placeholder="Enter EnScript here..."></textarea><br/>
+                <span id="execBtnWrapper">
+                    <button id="execBtn" disabled>Execute</button>
+                </span>
+                <script>
+                    const vscode = acquireVsCodeApi();
+
+                    const execBtn = document.getElementById("execBtn");
+                    const execBtnWrapper = document.getElementById("execBtnWrapper");
+
+                    execBtn.addEventListener("click", () => {
+                        const code = document.getElementById("code").value;
+                        vscode.postMessage({ command: "exec", code });
+                    });
+
+                    window.addEventListener("message", (event) => {
+                        const msg = event.data;
+                        if (msg.type === "executeEnabled") {
+                            if (msg.enabled) {
+                                execBtn.disabled = false;
+                                execBtnWrapper.title = "";
+                            }
+                            else {
+                                execBtn.disabled = true;
+                                execBtnWrapper.title = "Game is not connected";
+                            }
+                        }
+                    });
+                </script>
+            </body>
+        </html>
+        `;
+    }
+}
+
 export async function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel("DayZ Debug Port");
     context.subscriptions.push(outputChannel);
-
-    await cleanupOrphanProcesses();
-    startServer(context);
 
     context.subscriptions.push(
         vscode.commands.registerCommand("dzdbgport.viewLogs", () => {
@@ -195,6 +364,17 @@ export async function activate(context: vscode.ExtensionContext) {
             restartServer(context);
         }),
     );
+
+    execCodeViewProvider = new ExecCodeViewProvider(context.extensionUri);    
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(
+            ExecCodeViewProvider.viewType,
+            execCodeViewProvider
+        )
+    );
+
+    await cleanupOrphanProcesses();
+    startServer(context);
 }
 
 export async function deactivate(): Promise<void> {

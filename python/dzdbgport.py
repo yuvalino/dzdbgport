@@ -701,6 +701,12 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
         self.server = server
         self.ports: dict[int, DayZDebugPort] = dict()
 
+    @property
+    def current_port(self) -> DayZDebugPort:
+        if not self.ports:
+            raise ValueError("Game port not connected")
+        return next(iter(self.ports.values()))
+
     async def _send_or_broadcast(self, websocket: websockets.ServerConnection | None, message_json: dict):
         message = json.dumps(message_json)
         if websocket:
@@ -720,6 +726,14 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
             "pid": game_pid,
             "reason": reason,
         })
+    
+    async def _receive_ws(self, websocket: websockets.ServerConnection, type: str, message_json: dict):
+        match type:
+            case "execCode":
+                logging.info("got execCode from websocket")
+                await self.current_port.exec_code(module=message_json["module"], code=message_json["code"])
+            case _:
+                raise ValueError(f"unknown message type \"{type}\"")
 
     async def on_port_connected(self, port: DayZDebugPort):
         tcp_port = port.addr[1]
@@ -762,7 +776,12 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
         print("wsdc")
 
     async def on_websocket_message(self, websocket: websockets.ServerConnection, message: str):
-        print(f"wsm {message}")
+        try:
+            message_json = json.loads(message)
+            assert isinstance(message_json["type"], str)
+            await self._receive_ws(websocket, message_json["type"], message_json)
+        except Exception:
+            logging.exception(f"failed to receive websocket message: {message}")
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, listener: DayZPortListener, log_dir: Path | None = None):
