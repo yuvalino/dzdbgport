@@ -281,6 +281,7 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
         _context: vscode.WebviewViewResolveContext,
         _token: vscode.CancellationToken
     ) {
+        logPlugin("[WEBVIEW] resolve");
         this.view = webviewView;
         webviewView.webview.options = {
             enableScripts: true
@@ -308,11 +309,6 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
             if (webviewView.visible) {
                 updateExecButtonState();
             }
-        });
-
-        vscode.commands.registerCommand("dzdbgport.execCodeView.focus", () => {
-            webviewView.show?.(true);
-            webviewView.webview.postMessage({ type: "focusExecInput" });
         });
 
         updateExecButtonState();
@@ -575,7 +571,9 @@ export async function activate(context: vscode.ExtensionContext) {
             if (!pluginConfig().enableDebugPort) {
                 return;
             }
-            vscode.commands.executeCommand('dzdbgport.execCodeView.focus');
+            
+            execCodeViewProvider.view?.show?.(true);
+            execCodeViewProvider.view?.webview.postMessage({ type: "focusExecInput" });
         }),
 
         vscode.commands.registerCommand("dzdbgport.recompileFile", async (uri?: vscode.Uri) => {

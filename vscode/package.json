@@ -45,7 +45,8 @@
                 {
                     "id": "dzdbgport.execCodeView",
                     "name": "DayZ Debug Port",
-                    "type": "webview"
+                    "type": "webview",
+                    "when": "dzdbgport.enableDebugPort"
                 }
             ]
         },
