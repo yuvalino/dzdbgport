@@ -625,6 +625,8 @@ export async function activate(context: vscode.ExtensionContext) {
             const loadedFile = findLoadedFileForUri(uri);
             if (!loadedFile) {
                 logPlugin(`Cannot recompile file ${uri.fsPath} because it isn't loaded by the game`);
+                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}}": Not loaded by the game`);
+                return;
             }
             
             if (sendWebSocketMessage({ type: "recompile", filename: loadedFile })) {
