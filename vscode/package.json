@@ -1,11 +1,17 @@
 {
     "name": "dzdbgport",
     "displayName": "DayZ Debug Port",
-    "description": "Simple extension to view DayZ logs.",
-    "version": "0.0.1",
+    "description": "A debugging plugin for DayZ modding",
+    "version": "0.1.0",
+    "publisher": "yuval",
+    "icon": "media/logo.png",
     "categories": [
         "Other"
     ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/yuvalino/dzdbgport"
+    },
     "engines": {
         "vscode": "^1.99.1"
     },

@@ -5,6 +5,7 @@ vscode/dist/
 vscode/.vscode-test/
 vscode/package-lock.json
 vscode/bin
+vscode/*.vsix
 python/dayzdebug.log
 */data*.txt
 python/build/

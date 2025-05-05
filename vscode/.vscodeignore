@@ -1,0 +1,32 @@
+# Ignore dev-related files/folders
+.vscode/
+coverage/
+tmp/
+dist/
+test/
+tests/
+**/*.test.ts
+**/*.spec.ts
+*.tsbuildinfo
+*.log
+
+# Ignore config files not needed at runtime
+tsconfig*.json
+.eslintrc.*
+.prettierrc*
+*.code-workspace
+
+# Version control
+.git/
+.gitignore
+.npmrc
+
+# Python artifacts (since you're mixing tools)
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# OS junk
+*.DS_Store
+Thumbs.db
