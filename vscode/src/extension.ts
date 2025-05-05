@@ -10,6 +10,7 @@ let gameLogChannel: vscode.OutputChannel;
 let gameConnected = false;
 let execCodeViewProvider: ExecCodeViewProvider;
 let decorationProvider: LoadedFileDecorationProvider;
+let statusBarItem: vscode.StatusBarItem;
 const loadedFiles = new Set<string>();
 
 function logPlugin(msg: string, end: string = "\n") {
@@ -37,6 +38,36 @@ function pluginConfig(): PluginConfig {
         dataPath:        config.get<string>("dataPath", "P:\\")!,
         enableDebugPort: config.get<boolean>("enableDebugPort", true)!,
     };
+}
+
+function updateStatusBarItem() {
+    const enabled = pluginConfig().enableDebugPort;
+
+    if (!enabled) {
+        statusBarItem.text = "🔴 DayZ";
+        statusBarItem.tooltip = "Click to enable DayZ Debug Port";
+    } else if (gameConnected) {
+        statusBarItem.text = "🟢 DayZ";
+        statusBarItem.tooltip = "Click to disable DayZ Debug Port (Game Connected)";
+    } else {
+        statusBarItem.text = "🟡 DayZ";
+        statusBarItem.tooltip = "Click to disable DayZ Debug Port (No Game Connected)";
+    }
+
+    statusBarItem.command = "dzdbgport.toggleDebugPort";
+}
+
+function updateStatusBarVisibility() {
+    const editor = vscode.window.activeTextEditor;
+    const supportedLanguages = ["c", "enscript", "des"];
+
+    const isSupportedFile = editor && supportedLanguages.includes(editor.document.languageId);
+
+    if (isSupportedFile) {
+        statusBarItem.show();
+    } else {
+        statusBarItem.hide();
+    }
 }
 
 function webviewPostMessage(message: any) {
@@ -82,6 +113,7 @@ function onWebSocketMessage(msg: any) {
 
         gameConnected = true;
         updateExecButtonState();
+        updateStatusBarItem();
 
         vscode.window.showInformationMessage(`🟢 DayZ Game Connected (PID: ${msg.pid})`);
     } else if (msg.type === "disconnect") {
@@ -89,6 +121,7 @@ function onWebSocketMessage(msg: any) {
 
         gameConnected = false;
         updateExecButtonState();
+        updateStatusBarItem();
         clearLoadedFiles();
 
         if (msg.reason === "exit") {
@@ -158,6 +191,7 @@ function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
             connected = true;
             socket = ws;
             updateExecButtonState();
+            updateStatusBarItem();
             clearLoadedFiles();
 
             ws.onerror = (err) => {
@@ -170,6 +204,7 @@ function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
                 socket = null;
                 gameConnected = false;
                 updateExecButtonState();
+                updateStatusBarItem();
                 clearLoadedFiles();
             };
         };
@@ -194,6 +229,7 @@ function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
                 socket = null;
                 gameConnected = false;
                 updateExecButtonState();
+                updateStatusBarItem();
                 clearLoadedFiles();
             }
         };
@@ -510,7 +546,6 @@ async function toggleDebugPort()
 }
 
 async function ensurePluginEnabled(): Promise<boolean> {
-    logPlugin(`what ${pluginConfig().enableDebugPort}`);
     if (pluginConfig().enableDebugPort) {
         return true;
     }
@@ -543,6 +578,9 @@ async function refreshDebugPortEnablement(context: vscode.ExtensionContext)
 
         await stopServer();
     }
+
+    updateStatusBarItem();
+    updateStatusBarVisibility();
 }
 
 async function dumpDiag(context: vscode.ExtensionContext) {
@@ -652,6 +690,11 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.window.registerFileDecorationProvider(decorationProvider)
     );
+
+    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right);
+    context.subscriptions.push(statusBarItem);
+    updateStatusBarVisibility();
+    vscode.window.onDidChangeActiveTextEditor(updateStatusBarVisibility, null, context.subscriptions);
 
     // Watch for config changes (like dataPath)
     vscode.workspace.onDidChangeConfiguration(async (event) =>{
