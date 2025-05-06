@@ -16,7 +16,7 @@ Also an output channel for the debug port logs themselves.
 
 3. **Code Exec**: Convenient window with script input to execute on the connected game.
 
-4. **Recompile on Host**: Same old `Ctrl+F7` shortcut to recompile files loaded by the game. Loaded files are marked $\color{#C576F6}{Purple}$ and **Z** badge beside their filename in the explorer and editor. Right click in the explorer also allows recompiling the file.
+4. **Recompile on Host**: Same old `Ctrl+F7` shortcut to recompile files loaded by the game. Loaded files are colored and makred with a **Z** badge beside their filename in the explorer and editor. Right click in the explorer also allows recompiling the file.
 
 ![sidebar](resources/screen-sidebar.jpg)
 
