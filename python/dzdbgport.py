@@ -896,6 +896,7 @@ async def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("--ws", nargs="?", const=WSPORT, type=int, default=None, help=f"Enable WebSocket server. Optional port (default: {WSPORT})")
     parser.add_argument("--log-file", nargs="?", const=LOGFILE, default=None, help=f"Enable log to file. Optional filename (default: {LOGFILE})")
+    parser.add_argument("--sniff-dir", nargs="?", const=".", default=None, help=f"Directory to output sniff file. Optional.")
     args = parser.parse_args()
 
     tasks = []
@@ -912,8 +913,7 @@ async def main():
         listener = DayZDebugConsole(console)
         tasks.append(console.run())
 
-    log_dir = None if args.mock else (None if not args.log_file else Path(args.log_file).parent)
-    server = await asyncio.start_server(lambda r, w: handle_client(r, w, listener=listener, log_dir=log_dir), "0.0.0.0", DZDEBUGPORT)
+    server = await asyncio.start_server(lambda r, w: handle_client(r, w, listener=listener, log_dir=args.sniff_dir), "0.0.0.0", DZDEBUGPORT)
     tasks.append(server.serve_forever())
 
     if args.mock:
