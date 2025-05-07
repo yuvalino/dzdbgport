@@ -804,7 +804,10 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
     async def on_websocket_connected(self, websocket: websockets.ServerConnection):
         for port in self.ports.values():
             if port.pid != -1:
+                # TODO: maybe port needs to be locked to avoid races with game disconnect / code load / code unload notifications from the port
                 await self._send_ws_connect(websocket, port.pid)
+                for block in port.blocks.values():
+                    await self._send_ws_block_load(websocket, block.block_id, block.filenames)
 
     async def on_websocket_disconnected(self, websocket: websockets.ServerConnection):
         print("wsdc")
