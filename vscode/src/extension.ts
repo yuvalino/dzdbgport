@@ -1,7 +1,10 @@
 import * as vscode from "vscode";
 import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import * as path from "path";
+import * as os from 'os';
 import WebSocket from "ws";
+
+const logFilePath = path.join(os.tmpdir(), 'dzdbgport.log');
 
 let serverProcess: ChildProcessWithoutNullStreams | null = null;
 let socket: WebSocket | null = null;
@@ -161,6 +164,14 @@ function onWebSocketMessage(msg: any) {
         const text = msg.data;
         gameLogChannel.append(text.endsWith('\n') ? text : text + '\n');
     }
+    else if (msg.type === "output") {
+        const text = msg.data;
+        text.split(/\r?\n/).forEach((line: string) => {
+            if (line.trim() !== "") {
+                logPort(line);
+            }
+        });
+    }
     else {
         logPlugin(`[WS] [WARN] Unknown message type ${msg.type}`)
     }
@@ -257,22 +268,6 @@ function startServer(context: vscode.ExtensionContext) {
     logPlugin(`[INFO] Starting server from: ${exePath}`);
 
     serverProcess = spawn(exePath, ["--ws"], { cwd: path.dirname(exePath) });
-
-    serverProcess.stdout.on("data", (data) => {
-        data.toString().split(/\r?\n/).forEach((line: string) => {
-            if (line.trim() !== "") {
-                logPort(line);
-            }
-        });
-    });
-    
-    serverProcess.stderr.on("data", (data) => {
-        data.toString().split(/\r?\n/).forEach((line: string) => {
-            if (line.trim() !== "") {
-                logPort(`[stderr] ${line}`);
-            }
-        });
-    });
 
     serverProcess.on("close", (code) => {
         logPlugin(`[INFO] Server exited with code ${code}`);

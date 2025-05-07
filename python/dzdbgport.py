@@ -749,6 +749,15 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
             "type": "log",
             "data": data,
         })
+    
+    async def _send_ws_output(self, websocket: websockets.ServerConnection | None, data: str):
+        await self._send_or_broadcast(websocket, {
+            "type": "output",
+            "data": data,
+        })
+    
+    async def emit_output(self, data: str):
+        await self._send_ws_output(None, data)
 
     async def _receive_ws(self, websocket: websockets.ServerConnection, type: str, message_json: dict):
         match type:
@@ -864,7 +873,27 @@ class PromptToolkitHandler(logging.Handler):
         print_formatted_text(msg)
 
 
-def setup_logging(log_prompt: bool, log_file: Path | None):
+class WebSocketBroadcastHandler(logging.Handler):
+    def __init__(self, server: DayZDebugWebSocketServer):
+        super().__init__()
+        self.server = server
+        self.queue = asyncio.Queue()
+        self._task = asyncio.create_task(self._emit_task())
+    
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = self.format(record)
+            self.queue.put_nowait(msg)
+        except Exception:
+            self.handleError(record)
+    
+    async def _emit_task(self):
+        while True:
+            msg = await self.queue.get()
+            await self.server.emit_output(msg)
+
+
+def setup_logging(log_prompt: bool, log_file: Path | None, dzws: DayZDebugWebSocketServer | None):
     # Clear existing handlers
     logging.root.handlers.clear()
 
@@ -889,6 +918,12 @@ def setup_logging(log_prompt: bool, log_file: Path | None):
         file_handler.setLevel(level)
         logging.root.addHandler(file_handler)
 
+    if dzws:
+        ws_handler = WebSocketBroadcastHandler(dzws)
+        ws_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        file_handler.setLevel(level)
+        logging.root.addHandler(ws_handler)
+
     # Set global level
     logging.root.setLevel(level)
 
@@ -905,13 +940,13 @@ async def main():
     tasks = []
 
     if args.ws:
-        setup_logging(False, log_file=args.log_file)
         server = WebSocketServer(host="0.0.0.0", port=args.ws)
         listener = DayZDebugWebSocketServer(server)
+        setup_logging(False, log_file=args.log_file, dzws=listener)
         server.add_listener(listener)
         tasks.append(server.run())
     else:
-        setup_logging(True, log_file=args.log_file)
+        setup_logging(True, log_file=args.log_file, dzws=None)
         console = ConsoleInterface()
         listener = DayZDebugConsole(console)
         tasks.append(console.run())
