@@ -6,7 +6,6 @@ import WebSocket from "ws";
 
 const logFilePath = path.join(os.tmpdir(), 'dzdbgport.log');
 
-let serverProcess: ChildProcessWithoutNullStreams | null = null;
 let socket: WebSocket | null = null;
 let outputChannel: vscode.OutputChannel;
 let gameLogChannel: vscode.OutputChannel;
@@ -15,6 +14,11 @@ let execCodeViewProvider: ExecCodeViewProvider;
 let decorationProvider: LoadedFileDecorationProvider;
 let statusBarItem: vscode.StatusBarItem;
 const loadedFiles = new Set<string>();
+let activeConnectPromise: Promise<boolean> | null = null;
+
+let isDisconnecting = false;
+let disconnectTimeout: NodeJS.Timeout | null = null;
+
 
 function logPlugin(msg: string, end: string = "\n") {
     outputChannel.append(`[plugin ] ${msg}${end}`)
@@ -89,13 +93,11 @@ async function cleanupOrphanProcesses(): Promise<void> {
         const killer = spawn("taskkill", ["/IM", "dzdbgport.exe", "/F", "/T"]);
         killer.on("exit", () => {
             logPlugin(`[INFO] taskkill complete.`);
-            serverProcess = null;
             resolve();
         });
 
         killer.on("error", (err) => {
             logPlugin(`[ERROR] Failed to run taskkill: ${err.message}`);
-            serverProcess = null;
             resolve();
         });
     });
@@ -177,128 +179,149 @@ function onWebSocketMessage(msg: any) {
     }
 }
 
-function connectWebSocket(retryMs = 500, maxWaitMs = 5000) {
+function tryConnectWebSocket(maxWaitMs: number): Promise<boolean> {
+    if (activeConnectPromise) return activeConnectPromise; // don't overlap
     const wsUrl = "ws://localhost:28051";
     let startTime = Date.now();
-    let connected = false;
-    let errorShown = false;
 
-    logPlugin("[WS] Connecting to server...");
-
-    function tryConnect() {
-        if (connected || Date.now() - startTime > maxWaitMs) {
-            if (!connected && !errorShown) {
-                logPlugin("[WS] Failed to connect to server after retrying.");
-                vscode.window.showErrorMessage("❌ Could not connect to DayZ debug server.");
-                errorShown = true;
+    activeConnectPromise = new Promise((resolve) => {
+        function tryConnect() {
+            if (Date.now() - startTime > maxWaitMs) {
+                logPlugin("[WS] Failed to connect within timeout.");
+                activeConnectPromise = null;
+                return resolve(false);
             }
-            return;
+
+            const ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                logPlugin("[WS] Connected to server.");
+                socket = ws;
+                gameConnected = false;
+                updateExecButtonState();
+                updateStatusBarItem();
+                clearLoadedFiles();
+
+                ws.onmessage = (event) => {
+                    const raw = event.data;
+                    const text = typeof raw === "string" ? raw : raw.toString();
+                    const msg = JSON.parse(text);
+                    onWebSocketMessage(msg);
+                };
+
+                ws.onclose = () => {
+                    socket = null;
+                    gameConnected = false;
+                    updateExecButtonState();
+                    updateStatusBarItem();
+                    clearLoadedFiles();
+
+                    // clear out disconnect timeout
+                    if (disconnectTimeout) {
+                        clearTimeout(disconnectTimeout);
+                        disconnectTimeout = null;
+                    }
+
+                    // retry connecting if no disconnection
+                    if (isDisconnecting) {
+                        isDisconnecting = false;
+                        logPlugin("[WS] WebSocket disconnected");
+                        activeConnectPromise = null;
+                    }
+                    else {
+                        startTime = Date.now();
+                        maxWaitMs = 5000;
+                        setTimeout(tryConnect, 300);
+                        logPlugin("[WS] WebSocket disconnected, retrying...");
+                    }
+                };
+
+                activeConnectPromise = null;
+                return resolve(true);
+            };
+
+            ws.onerror = () => {
+                // Ignore, wait for onclose
+            };
+
+            ws.onclose = () => {
+                setTimeout(tryConnect, 300);
+            };
         }
 
-        const ws = new WebSocket(wsUrl);
-
-        ws.onopen = () => {
-            logPlugin("[WS] Connected to server.");
-            connected = true;
-            socket = ws;
-            updateExecButtonState();
-            updateStatusBarItem();
-            clearLoadedFiles();
-
-            ws.onerror = (err) => {
-                logPlugin("[WS] WebSocket error.");
-                console.error(err);
-            };
-        
-            ws.onclose = () => {
-                logPlugin("[WS] WebSocket disconnected.");
-                socket = null;
-                gameConnected = false;
-                updateExecButtonState();
-                updateStatusBarItem();
-                clearLoadedFiles();
-            };
-        };
-
-        ws.onmessage = (event) => {
-            const raw = event.data;
-            const text = typeof raw === "string" ? raw : raw.toString();
-            const msg = JSON.parse(text);
-
-            onWebSocketMessage(msg);
-        };
-
-        ws.onerror = () => {
-            // do nothing here, retry silently (onclose called soon after)
-        };
-
-        ws.onclose = () => {
-            if (!connected) {
-                setTimeout(tryConnect, retryMs); // retry
-            } else {
-                logPlugin("[WS] WebSocket disconnected.");
-                socket = null;
-                gameConnected = false;
-                updateExecButtonState();
-                updateStatusBarItem();
-                clearLoadedFiles();
-            }
-        };
-    }
-
-    tryConnect();
+        tryConnect();
+    });
+    return activeConnectPromise;
 }
 
 
 function disconnectWebSocket() {
-    if (socket) {
-        logPlugin("[WS] Disconnecting from server...");
-        socket.close();
-        socket = null;
-    }
-}
-
-function startServer(context: vscode.ExtensionContext) {
-    if (serverProcess) {
-        logPlugin("[INFO] Server already running.");
+    if (!socket) {
         return;
     }
 
+    logPlugin("[WS] Disconnecting from server...");
+
+    isDisconnecting = true;
+    if (disconnectTimeout) {
+        clearTimeout(disconnectTimeout);
+    }
+
+    socket.close();
+    // socket = null on the lambda
+
+    // clear isDisconnecting
+    disconnectTimeout = setTimeout(() => {
+        isDisconnecting = false;
+        disconnectTimeout = null;
+        if (socket) {
+            logPlugin("[WS] WARNING: socket did not close after timeout");
+        }
+    }, 3000);
+}
+
+function startServer(context: vscode.ExtensionContext) {
     const exePath = path.join(context.extensionPath, "bin", "dzdbgport.exe");
-    logPlugin(`[INFO] Starting server from: ${exePath}`);
+    logPlugin(`[INFO] Starting server from: ${exePath} logfile at ${logFilePath}`);
 
-    serverProcess = spawn(exePath, ["--ws"], { cwd: path.dirname(exePath) });
-
-    serverProcess.on("close", (code) => {
-        logPlugin(`[INFO] Server exited with code ${code}`);
-        serverProcess = null;
-    });
+    let serverProcess = spawn(
+        exePath, ["--ws", "--log-file", logFilePath], {
+            detached: true,
+            stdio: "ignore",
+            cwd: path.dirname(exePath),
+            windowsHide: true,
+        }
+    );
 
     serverProcess.on("error", (err) => {
         logPlugin(`[ERROR] Failed to start server: ${err.message}`);
-        serverProcess = null;
     });
 
-    connectWebSocket()
+    serverProcess.unref()
+}
+
+async function connectOrStartServer(context: vscode.ExtensionContext) {
+    let didConnect = await tryConnectWebSocket(2000);
+    if (!didConnect) {
+        logPlugin("[WS] No server found, starting local server...");
+        await stopServer();
+        startServer(context);
+        if (!(await tryConnectWebSocket(5000))) {
+            logPlugin("[WS] ERROR: Could not connect to started local server!")
+        }
+    }
 }
 
 async function stopServer() {
     disconnectWebSocket();
-
-    if (!serverProcess || serverProcess.killed) return;
-
-    const pid = serverProcess.pid;
-    logPlugin(`[INFO] Force-killing server process with PID ${pid}`);
-
     await cleanupOrphanProcesses();
-
     // TODO wait for server process to die
 }
 
 async function restartServer(context: vscode.ExtensionContext) {
     await stopServer();
     await new Promise((res) => setTimeout(res, 300)); // wait a bit
-    startServer(context);
+    await connectOrStartServer(context);
 }
 
 export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
@@ -564,14 +587,13 @@ async function refreshDebugPortEnablement(context: vscode.ExtensionContext)
         logPlugin("[CONFIG] Debug port enabled");
         vscode.commands.executeCommand("setContext", "dzdbgport.enableDebugPort", true);
 
-        await cleanupOrphanProcesses();
-        startServer(context);
+        await connectOrStartServer(context);
     }
     else {
         logPlugin("[CONFIG] Debug port disabled");
         vscode.commands.executeCommand("setContext", "dzdbgport.enableDebugPort", false);
 
-        await stopServer();
+        disconnectWebSocket();
     }
 
     updateStatusBarItem();
@@ -584,7 +606,6 @@ async function dumpDiag(context: vscode.ExtensionContext) {
     lines.push(`timestamp: ${new Date().toISOString()}`);
     lines.push(`config.enableDebugPort: ${pluginConfig().enableDebugPort}`)
     lines.push(`config.dataPath: ${pluginConfig().dataPath}`);
-    lines.push(`serverProcess.pid: ${serverProcess?.pid}`);
     lines.push(`gameConnected: ${gameConnected}`);
     lines.push(`loadedFiles.size: ${loadedFiles.size}`)
     if (loadedFiles.size > 0) {
@@ -707,5 +728,5 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export async function deactivate(): Promise<void> {
-    await stopServer();
+    disconnectWebSocket();
 }
