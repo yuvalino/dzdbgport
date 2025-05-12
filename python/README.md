@@ -7,3 +7,5 @@ DayZ Debug Port is an unofficial project for DayZ modders to enable debugging ou
 The foundation for this extension is the Python package that can connect to the game and talk to it in the right protocol.
 
 This package is bundled as an exe with the extension and talks to it using a websocket. The package also has a debug console that provides lower-level access to the functionality exposed via the VSCode extension.
+
+![console](https://raw.githubusercontent.com/yuvalino/dzdbgport/refs/heads/main/resources/screen-console.jpg)

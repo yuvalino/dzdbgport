@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "dzdbgport"
-version = "0.1.0"
-description = ""
+version = "0.2.2"
+description = "Unofficial DayZ debugging tool for VSCode and development package in Python."
 authors = ["Yuval <yuvalino@gmail.com>"]
 readme = "README.md"
 
@@ -16,3 +16,6 @@ pyinstaller = "^6.13.0"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.urls]
+"Github" = "https://github.com/yuvalino/dzdbgport"
