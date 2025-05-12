@@ -676,12 +676,15 @@ class WebSocketServer:
                 for listener in self.listeners.values():
                     if await listener.on_websocket_message(websocket, message):
                         break
-        except websockets.ConnectionClosed:
-            logging.info(f"Client disconnected: {websocket.remote_address}")
+        except Exception:
+            logging.exception(f"Client {websocket.remote_address} exception:")
         finally:
+            logging.info(f"Client disconnected: {websocket.remote_address}")
             for listener in self.listeners.values():
                 await listener.on_websocket_disconnected(websocket)
             self.clients.remove(websocket)
+
+            await websocket.close()
 
     async def _on_message(self, websocket, message):
         # send to all handlers until someone returns True
