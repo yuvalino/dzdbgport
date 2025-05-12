@@ -1,6 +1,7 @@
 # DayZ Debug Port
 
-[![image](https://img.shields.io/pypi/v/dzdbgport.svg)](https://pypi.python.org/pypi/dzdbgport)
+[![image](https://img.shields.io/pypi/v/dzdbgport.svg?logo=pypi&logoColor=white)](https://pypi.python.org/pypi/dzdbgport)
+[![Discord](https://img.shields.io/badge/Submit%20Feedback-7289DA?logo=discord&logoColor=white&label=&style=flat)](https://discord.gg/BVSeTgAgJw)
 
 DayZ Debug Port is an unofficial project for DayZ modders to enable debugging outside the Workbench app that ships with DayZ tools.
 
