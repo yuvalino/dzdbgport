@@ -46,7 +46,7 @@ def main():
     print("🔨 Building binary with PyInstaller...")
     run([
         "poetry", "run", "pyinstaller",
-        "--onefile",
+        "--onefile", "--noconsole", "--windowed",
         "--name", "dzdbgport",
         str(MAIN_SCRIPT)
     ])
