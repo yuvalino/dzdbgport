@@ -679,7 +679,7 @@ export async function activate(context: vscode.ExtensionContext) {
             const loadedFile = findLoadedFileForUri(uri);
             if (!loadedFile) {
                 logPlugin(`Cannot recompile file ${uri.fsPath} because it isn't loaded by the game`);
-                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}}": Not loaded by the game`);
+                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}": Not loaded by the game`);
                 return;
             }
             
@@ -689,7 +689,7 @@ export async function activate(context: vscode.ExtensionContext) {
             }
             else {
                 logPlugin(`Could not recompile ${uri.fsPath}, game not connected`);
-                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}}": Game is not connected.`);
+                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}": Game is not connected.`);
             }
         })
     );
