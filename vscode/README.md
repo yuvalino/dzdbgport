@@ -18,6 +18,9 @@ Here's an example command to create a shortcut:
 
 **NOTE:** Recompile only reloads the code! If your recompiled code doesn't run make sure it isn't something that runs once on game startup / mission startup / player connection.
 
+### (YouTube) VSCode DayZ Debug Port Quickstart Guide
+[![VSCode DayZ Debug Port Quickstart Guide](https://img.youtube.com/vi/PI5-3fOhSI4/0.jpg)](https://www.youtube.com/watch?v=PI5-3fOhSI4 "VSCode DayZ Debug Port Quickstart Guide")
+
 ## 🧩 VSCode Extension
 
 1. **Active Game Connection:** Maintains a connection to the game with realtime notifications for game connections, game exit and game crashes.
