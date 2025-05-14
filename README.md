@@ -5,6 +5,22 @@
 
 DayZ Debug Port is an unofficial project for DayZ modders to enable debugging outside the Workbench app that ships with DayZ tools.
 
+## 🔧 Initial setup
+
+To have the game connect to the DayZ Debug Port, you'll need to run the **DayZDiag_x64.exe** executable instead of the vanilla **DayZ_x64.exe** binary. Once the game runs, it will auto-connect to the extension.
+
+![dayzdiag](resources/screen-dayzdiag.jpg)
+
+### Setup **Recompile on Host (Ctrl+F7)**
+
+For **Recompile on Host (Ctrl+F7)** to work, you'll need to run **DayZDiag_x64.exe** with `-filePatching` flag and setup shortcuts from the game's installation folder to the projects to enable filePatching on as explained in [DayZ: Modding Basics - Preparing FilePatching](https://community.bistudio.com/wiki/DayZ:Modding_Basics?useskin=vector#Preparing_FilePatching).
+
+Here's an example command to create a shortcut:
+
+`mklink /J "DayZInstallationFolder\FirstMod" "P:\FirstMod"`
+
+**NOTE:** Recompile only reloads the code! If your recompiled code doesn't run make sure it isn't something that runs once on game startup / mission startup / player connection.
+
 ## 🧩 VSCode Extension
 
 1. **Active Game Connection:** Maintains a connection to the game with realtime notifications for game connections, game exit and game crashes.
