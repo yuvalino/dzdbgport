@@ -607,7 +607,19 @@ class DayZDebugConsole(DayZPortListener):
     
     @dzcli()
     async def cmd_eval(self, args):
-        await self.port.exec_code(module="World", code=' '.join(args))
+        EVAL_MODULES = ["Core", "GameLib", "Game", "World", "Mission"]
+        module="World"
+        if args:
+            if args[0] == "-h" or args[0] == "--help":
+                print(f"eval [" + "|".join(f"-"+x for x in EVAL_MODULES) + "] CODE...")
+                return
+            if args[0].startswith("-"):
+                opt = args[0][1:]
+                if opt in EVAL_MODULES:
+                    module = opt
+                    args = args[1:]
+        
+        await self.port.exec_code(module=module, code=' '.join(args))
     
     @dzcli()
     async def cmd_blocks(self, args):
