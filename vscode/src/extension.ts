@@ -346,12 +346,13 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
         webviewView.webview.onDidReceiveMessage(async (message) => {
             if (message.type === "exec") {
                 const code = message.code;
-                if (!code) {
+                const module = message.module;
+                if (!code || !module) {
                     return;
                 }
 
-                if (sendWebSocketMessage({ type: "execCode", module: "World", code: code })) {
-                    vscode.window.showInformationMessage(`🚀 Executing code...`);
+                if (sendWebSocketMessage({ type: "execCode", module: module, code: code })) {
+                    vscode.window.showInformationMessage(`🚀 Executing code (${module})...`);
                 }
                 else {
                     vscode.window.showErrorMessage("❌ Cannot execute code: Game is not connected.");
@@ -366,6 +367,16 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
         });
 
         updateExecButtonState();
+        webviewPostMessage({
+            type: "setModules",
+            modules: [
+                { value: "Core",    label: "1_Core" },
+                { value: "GameLib", label: "2_GameLib" },
+                { value: "Game",    label: "3_Game" },
+                { value: "World",   label: "4_World" }, // not really sure any other type is supported
+                { value: "Mission", label: "5_Mission" },
+            ]
+        });
     }
   
     private getHtml(): string {
@@ -431,35 +442,59 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
                     #execBtnWrapper {
                         display: inline-block;
                     }
+                    
+                    select {
+                        padding: 6px 12px;
+                        background-color: var(--vscode-input-background);
+                        color: var(--vscode-input-foreground);
+                        border: 1px solid var(--vscode-input-border);
+                        border-radius: 4px;
+                        font-family: var(--vscode-editor-font-family);
+                        font-size: var(--vscode-editor-font-size);
+                        margin-right: 8px;
+                    }
+
+                    select:hover, select:focus {
+                        outline: none;
+                        border-color: var(--vscode-focusBorder);
+                    }
                 </style>
             </head>
             <body>
                 <textarea id="code" placeholder="Enter EnScript here..."></textarea><br/>
                 <span id="execBtnWrapper">
+                    <select id="modulesDropdown"></select>
                     <button id="execBtn" disabled>Execute</button>
                 </span>
                 <script>
                     const vscode = acquireVsCodeApi();
 
                     const codeBox = document.getElementById("code");
+                    const modulesDropdown = document.getElementById("modulesDropdown");
                     const execBtn = document.getElementById("execBtn");
                     const execBtnWrapper = document.getElementById("execBtnWrapper");
 
                     // Restore state
                     const prevState = vscode.getState();
-                    if (prevState && prevState.code) {
-                        codeBox.value = prevState.code;
+                    if (prevState) {
+                        if (prevState.code) {
+                            codeBox.value = prevState.code;
+                        }
+                        if (prevState.module) {
+                            modulesDropdown.value = prevState.module;
+                        }
                     }
 
                     // Also update state on input for live saving
                     codeBox.addEventListener("input", () => {
-                        vscode.setState({ code:codeBox.value });
+                        vscode.setState({ code:codeBox.value, module:modulesDropdown.value });
                     });
 
                     function execCode() {
                         const code = codeBox.value;
-                        vscode.setState({ code });  // Save code for future sessions
-                        vscode.postMessage({ type: "exec", code });
+                        const module = modulesDropdown.value;
+                        vscode.setState({ code, module });  // save code for future sessions
+                        vscode.postMessage({ type: "exec", code, module });
                     }
                     execBtn.addEventListener("click", execCode);
 
@@ -486,6 +521,19 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
                         }
                         else if (msg.type === "focusExecInput") {
                             codeBox.focus();
+                        }
+                        else if (msg.type === "setModules") {
+                            modulesDropdown.innerHTML = "";
+                            msg.modules.forEach(module => {
+                                const option = document.createElement("option");
+                                option.value = module.value;
+                                option.textContent = module.label;
+                                modulesDropdown.appendChild(option);
+                            });
+                            const prevState = vscode.getState();
+                            if (prevState && prevState.module) {
+                                modulesDropdown.value = prevState.module;
+                            }
                         }
                     });
                 </script>
