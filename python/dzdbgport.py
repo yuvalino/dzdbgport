@@ -283,9 +283,9 @@ class DayZProtocol:
 
     # === Parse ===
     
-    async def parse_next(self) -> DZBaseMsg:
+    async def parse_next(self, timeout=0) -> DZBaseMsg:
         start_offset = self.tell()
-        tag = await self.readu32(timeout=0)  # no timeout here
+        tag = await self.readu32(timeout=timeout)
         if tag not in DZ_MESSAGE_REGISTRY:
             raise ValueError(f"Unknown tag {hex(tag)}")
         
@@ -494,11 +494,15 @@ class DayZDebugPort:
         self.next_idx += 1
         return idx
 
+    async def recv_one_msg(self, timeout=0) -> DZBaseMsg:
+        msg = await self.protocol.parse_next(timeout=timeout)
+        await self.handle_msg(msg)
+        return msg
+
     async def run(self):
         while self.running and not self.protocol.buffer.closed:
             try:
-                msg = await self.protocol.parse_next()
-                await self.handle_msg(msg)
+                await self.recv_one_msg()
             except EOFError as e:
                 logging.info(f"Debug port closed")
                 break
@@ -559,36 +563,51 @@ class DayZDebugPort:
         return await self.protocol.send(DZRecompileMsg(block_id=block_id, file_index=file_index))
 
 
-def dzcli(name=None):
+def dzcli(name=None, **kwargs):
     def decorator(func):
         func._is_command = True
         func._command_name = name or func.__name__.removeprefix("cmd_")
+        func._attrs = kwargs
         return func
     return decorator
 
 
 class DayZDebugConsole(DayZPortListener):
     def __init__(self, console: ConsoleInterface):
-        self._port: DayZDebugPort = None
+        self._ports: dict[int, DayZDebugPort] = {}
+        self._selected_port: DayZDebugPort | None = None
         self.console = console
         self._register_commands()
 
-    async def on_port_connected(self, port):
-        if self._port:
-            raise ValueError("double port")
-        self._port = port
-
-        # run after registering
-        await port.run()
+    async def on_port_connected(self, port: DayZDebugPort):
+        select_port = False
+        if port.pid in self._ports:
+            logging.warning(f"port pid:{port.pid} already connected, closing")
+            if self._selected_port == self._ports[port.pid]:
+                select_port = True  # select current port if previous one on same pid was selected
+            self._ports[port.pid].close()
+        elif not self._ports:
+            assert not self._selected_port
+            select_port = True  # select port if no ports available
+        
+        self._ports[port.pid] = port
+        if select_port:
+            self._selected_port = port
     
-    async def on_port_disconnected(self, port):
-        self._port = None
+    async def on_port_disconnected(self, port: DayZDebugPort):
+        if port.pid not in self._ports:
+            logging.warning(f"port pid:{port.pid} disconnected but is not registered")
+            return
 
-    @property
-    def port(self) -> DayZDebugPort:
-        if not self._port:
-            raise ValueError("no connected port")
-        return self._port
+        self._ports.pop(port.pid)
+
+        if self._selected_port == port:
+            self._selected_port = None
+
+    def selected_port(self) -> DayZDebugPort:
+        if not self._selected_port:
+            raise ValueError(f"no port selected ({len(self._ports)} available)")
+        return self._selected_port
 
     def _register_commands(self):
         for attr_name in dir(self):
@@ -596,15 +615,63 @@ class DayZDebugConsole(DayZPortListener):
                 attr = getattr(self, attr_name)
                 if callable(attr) and getattr(attr, "_is_command", False):
                     cmd_name = attr._command_name
-                    self.console.register_command(cmd_name, attr)
+                    def make_wrapper(attr):
+                        def wrapper(args):
+                            if attr._attrs.get("with_port"):
+                                port = None
+                                if len(args) and args[0].startswith("@"):
+                                    port = self._ports[int(args[0][1:])]
+                                    args = args[1:]
+                                if not port:
+                                    port = self.selected_port()
+                                return attr(port, args)
+                            return attr(args)
+                        return wrapper
+                    self.console.register_command(cmd_name, make_wrapper(attr))
 
     @dzcli()
-    async def cmd_diag(self, args):
-        offset = self.port.protocol.tell()
-        print(f"protocol read offset: {offset}")
+    async def cmd_ports(self, args):
+        print("connected debug ports:")
+        if not self._ports:
+            print(" - no connected ports")
+            return
+        
+        found_selected = False
+        for idx, port in enumerate(self._ports.values()):
+            if self._selected_port == port:
+                print(f">{idx+1}. pid={port.pid}")
+                found_selected = True
+            else:
+                print(f" {idx+1}. pid={port.pid}")
+        if not found_selected and self._selected_port:
+            print(f">?. pid={port.pid}")
     
     @dzcli()
-    async def cmd_eval(self, args):
+    async def cmd_select(self, args):
+        if not args:
+            if self._selected_port:
+                print(self._selected_port.pid)
+            return
+
+        if args[0] == "-":
+            self._selected_port = None
+            return
+        
+        try:
+            pid = int(args[0])
+        except Exception:
+            pid = None
+        if pid not in self._ports:
+            raise ValueError(f"unknown port pid {pid}")
+        self._selected_port = self._ports[pid]
+        
+    @dzcli(with_port=True)
+    async def cmd_diag(self, port: DayZDebugPort, args):
+        offset = port.protocol.tell()
+        print(f"protocol read offset: {offset}")
+    
+    @dzcli(with_port=True)
+    async def cmd_eval(self, port: DayZDebugPort, args):
         EVAL_MODULES = ["Core", "GameLib", "Game", "World", "Mission"]
         module="World"
         if args:
@@ -617,19 +684,19 @@ class DayZDebugConsole(DayZPortListener):
                     module = opt
                     args = args[1:]
         
-        await self.port.exec_code(module=module, code=' '.join(args))
+        await port.exec_code(module=module, code=' '.join(args))
     
-    @dzcli()
-    async def cmd_blocks(self, args):
+    @dzcli(with_port=True)
+    async def cmd_blocks(self, port: DayZDebugPort, args):
         print(f"loaded blocks:")
-        for block in self.port.blocks.values():
+        for block in port.blocks.values():
             print(f"  {hex(block.block_id)} (files={len(block.filenames)})")
     
-    @dzcli()
-    async def cmd_search_file(self, args):
+    @dzcli(with_port=True)
+    async def cmd_search_file(self, port: DayZDebugPort, args):
         name = ' '.join(args)
         print(f"searching for filename \"{name}\"")
-        results = self.port.search_filenames(name)
+        results = port.search_filenames(name)
         
         if not results:
             print(" - no results")
@@ -640,14 +707,14 @@ class DayZDebugConsole(DayZPortListener):
             block, file_index = result
             print(f" {index+1}. {hex(block.block_id)}::{hex(file_index)}  {block.filenames[file_index]}")
 
-    @dzcli()
-    async def cmd_recompile(self, args):
+    @dzcli(with_port=True)
+    async def cmd_recompile(self, port: DayZDebugPort, args):
         name = ' '.join(args)
-        results = self.port.search_filenames(name)
+        results = port.search_filenames(name)
         if not results:
             raise ValueError(f"no filenames matching \"{name}\"")
         for block, file_index in results:
-            await self.port.recompile(block_id=block.block_id, file_index=file_index)
+            await port.recompile(block_id=block.block_id, file_index=file_index)
 
 
 class WebSocketListener:
@@ -790,9 +857,6 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
         if tcp_port in self.ports:
             logging.warning(f"game tcp port {tcp_port} already connected")
         self.ports[tcp_port] = port
-
-        # run after registering
-        await port.run()
     
     async def on_port_disconnected(self, port: DayZDebugPort):
         tcp_port = port.addr[1]
@@ -844,20 +908,39 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, listener: DayZPortListener, log_dir: Path | None = None):
-    buffer = SocketBuffer(reader, writer, log_dir=log_dir)
-    protocol = DayZProtocol(buffer)
-    port = DayZDebugPort(addr=writer.get_extra_info('peername'), protocol=protocol)
-    port.add_listener(listener)
+    try:
+        buffer = SocketBuffer(reader, writer, log_dir=log_dir)
+        protocol = DayZProtocol(buffer)
+        port = DayZDebugPort(addr=writer.get_extra_info('peername'), protocol=protocol)
 
-    logging.info(f"dayz port connected {port.addr}")
-    await asyncio.gather(*[
-        buffer.start(),
-        listener.on_port_connected(port),
-    ])
+        logging.info(f"dayz port connected {port.addr}, parsing hello")
 
-    logging.info(f"dayz port disconnect {port.addr}")
-    await listener.on_port_disconnected(port)
-    writer.close()
+        # receive hello right on connection
+        buffer_task = asyncio.create_task(buffer.start())
+
+        msg = await port.recv_one_msg(30)
+        assert isinstance(msg, DZHelloMsg)
+        assert port.pid != -1
+
+        await listener.on_port_connected(port)
+        try:
+            await listener.on_port_message(port, msg)
+            
+            port.add_listener(listener)
+
+            logging.info(f"dayz port initialized ({port.addr=}, {port.pid=})")
+
+            await asyncio.gather(*[
+                buffer_task,
+                port.run(),
+            ])
+        except Exception as e:
+            logging.error(f"dayz port exception: ({port.addr=}, {port.pid=})")
+        finally:
+            logging.info(f"dayz port disconnect {port.addr}")
+            await listener.on_port_disconnected(port)
+    finally:
+        writer.close()
 
 
 async def mock_client(path="data.bin.txt"):
