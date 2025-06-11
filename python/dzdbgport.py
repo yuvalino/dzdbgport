@@ -171,6 +171,8 @@ class SocketBuffer:
         try:
             async with self.read_lock:
                 while len(self.buffer) < n:
+                    if self.closed:
+                        raise EOFError(f"Socket closed. Needed {n} bytes, got {len(self.buffer)}.")
                     self.data_event.clear()
                     await asyncio.wait_for(self.data_event.wait(), timeout)
         except asyncio.TimeoutError:
@@ -283,19 +285,12 @@ class DayZProtocol:
     
     async def parse_next(self) -> DZBaseMsg:
         start_offset = self.tell()
-        try:
-            tag = await self.readu32(timeout=0)  # no timeout here
-            if tag not in DZ_MESSAGE_REGISTRY:
-                raise ValueError(f"Unknown tag {hex(tag)}")
-            
-            msg_class = DZ_MESSAGE_REGISTRY[tag]
-            return await msg_class.decode(self)
-        except TimeoutError:
-                logging.info("Reached end of stream or partial data.")
-        except Exception as e:
-            end_offset = self.tell()
-            logging.exception(f"parsing failed (off {start_offset}-{end_offset}): {e}")
-            raise
+        tag = await self.readu32(timeout=0)  # no timeout here
+        if tag not in DZ_MESSAGE_REGISTRY:
+            raise ValueError(f"Unknown tag {hex(tag)}")
+        
+        msg_class = DZ_MESSAGE_REGISTRY[tag]
+        return await msg_class.decode(self)
     
     # === Send ===
 
@@ -504,6 +499,9 @@ class DayZDebugPort:
             try:
                 msg = await self.protocol.parse_next()
                 await self.handle_msg(msg)
+            except EOFError as e:
+                logging.info(f"Debug port closed")
+                break
             except TimeoutError as e:
                 logging.warning(f"Parser timeout: {e}")
                 break
@@ -584,7 +582,7 @@ class DayZDebugConsole(DayZPortListener):
         await port.run()
     
     async def on_port_disconnected(self, port):
-        raise ValueError("now wut")
+        self._port = None
 
     @property
     def port(self) -> DayZDebugPort:
@@ -860,7 +858,6 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     logging.info(f"dayz port disconnect {port.addr}")
     await listener.on_port_disconnected(port)
     writer.close()
-    await writer.wait_closed()
 
 
 async def mock_client(path="data.bin.txt"):
@@ -936,7 +933,7 @@ def setup_logging(log_prompt: bool, log_file: Path | None, dzws: DayZDebugWebSoc
     if dzws:
         ws_handler = WebSocketBroadcastHandler(dzws)
         ws_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        file_handler.setLevel(level)
+        ws_handler.setLevel(level)
         logging.root.addHandler(ws_handler)
 
     # Set global level
