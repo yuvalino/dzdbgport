@@ -9,6 +9,7 @@ import datetime
 import argparse
 import websockets
 
+from contextvars import ContextVar
 from contextlib import AsyncExitStack
 
 from pathlib import Path
@@ -52,6 +53,12 @@ from prompt_toolkit.shortcuts import print_formatted_text
 DZDEBUGPORTS = [1000, 1001]
 WSPORT = 28051
 LOGFILE = Path(".") / "dayzdebug.log"
+
+PEERTYPE_CLIENT = "C"
+PEERTYPE_SERVER = "S"
+
+task_prefix = ContextVar("task_prefix", default="")
+
 
 class ConsoleInterface:
     def __init__(self, ps1: str = "dz$ "):
@@ -480,12 +487,13 @@ class DayZPortListener:
 
 
 class DayZDebugPort:
-    def __init__(self, addr, protocol: DayZProtocol):
+    def __init__(self, addr, protocol: DayZProtocol, peer_type: str):
         self.addr = addr
         self.protocol = protocol
         self.running = True
         self.blocks: dict[int, DZBlockLoadMsg] = dict()
         self.pid = -1
+        self.peer_type = peer_type
         
         self.listeners: dict[int, DayZPortListener] = dict()
         self.next_idx = 0
@@ -909,12 +917,15 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
             logging.exception(f"failed to receive websocket message: {message}")
 
 
-async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, listener: DayZPortListener, log_dir: Path | None = None):
+async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, listener: DayZPortListener, server_port: int, shutdown_evt: asyncio.Event, log_dir: Path | None = None):
     try:
+        peer_type = PEERTYPE_SERVER if server_port == 1001 else PEERTYPE_CLIENT  # clients 1000, servers 1001
         buffer = SocketBuffer(reader, writer, log_dir=log_dir)
         protocol = DayZProtocol(buffer)
-        port = DayZDebugPort(addr=writer.get_extra_info('peername'), protocol=protocol)
+        port = DayZDebugPort(addr=writer.get_extra_info('peername'), protocol=protocol, peer_type=peer_type)
 
+        peer_type_log = " S" if peer_type == PEERTYPE_SERVER else "C "
+        task_prefix.set(f"[PORT:{str(port.addr[1]).ljust(5)} {peer_type_log}]")
         logging.info(f"dayz port connected {port.addr}, parsing hello")
 
         # receive hello right on connection
@@ -924,6 +935,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         assert isinstance(msg, DZHelloMsg)
         assert port.pid != -1
 
+        task_prefix.set(f"[PID:{str(port.pid).ljust(5)} {peer_type_log}]")
+
         await listener.on_port_connected(port)
         try:
             await listener.on_port_message(port, msg)
@@ -932,10 +945,18 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
             logging.info(f"dayz port initialized ({port.addr=}, {port.pid=})")
 
-            await asyncio.gather(*[
+            done, pending = await asyncio.wait([
                 buffer_task,
-                port.run(),
-            ])
+                asyncio.create_task(port.run()),
+                asyncio.create_task(shutdown_evt.wait()),
+            ], return_when=asyncio.FIRST_COMPLETED)
+
+            for task in pending:
+                task.cancel()
+            
+            for task in done:
+                await task
+            
         except Exception as e:
             logging.error(f"dayz port exception: ({port.addr=}, {port.pid=})")
         finally:
@@ -990,6 +1011,13 @@ class WebSocketBroadcastHandler(logging.Handler):
             await self.server.emit_output(msg)
 
 
+class PrefixFilter(logging.Filter):
+    def filter(self, record):
+        prefix = task_prefix.get()
+        if prefix:
+            record.msg = f"{prefix} {record.msg}"
+        return True
+    
 def setup_logging(log_prompt: bool, log_file: Path | None, dzws: DayZDebugWebSocketServer | None):
     # Clear existing handlers
     logging.root.handlers.clear()
@@ -1024,6 +1052,8 @@ def setup_logging(log_prompt: bool, log_file: Path | None, dzws: DayZDebugWebSoc
     # Set global level
     logging.root.setLevel(level)
 
+    logging.root.addFilter(PrefixFilter())
+
 
 async def main():
     parser = argparse.ArgumentParser()
@@ -1048,9 +1078,11 @@ async def main():
         listener = DayZDebugConsole(console)
         tasks.append(asyncio.create_task(console.run()))
 
+    shutdown_evt = asyncio.Event()
+
     servers = []
     for port in DZDEBUGPORTS:
-        server = await asyncio.start_server(lambda r, w: handle_client(r, w, listener=listener, log_dir=args.sniff_dir), "0.0.0.0", port)
+        server = await asyncio.start_server(lambda r, w, _port=port: handle_client(r, w, listener=listener, server_port=_port, shutdown_evt=shutdown_evt, log_dir=args.sniff_dir), "0.0.0.0", port)
         tasks.append(asyncio.create_task(server.serve_forever()))
         servers.append(server)
 
@@ -1072,10 +1104,13 @@ async def main():
             # Cancel all tasks still running
             for task in pending:
                 task.cancel()
+            
+            shutdown_evt.set()
 
             # Propagate any exceptions
             for task in done:
                 await task
+            
 
         except asyncio.CancelledError:
             logging.info("Server shutdown requested via Ctrl+C")
