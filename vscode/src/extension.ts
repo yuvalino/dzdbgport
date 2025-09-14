@@ -124,8 +124,12 @@ function updateStatusBarItem() {
         statusBarItem.command = "dzdbgport.toggleDebugPort";
     } else if (ports.size) {
         let port = ports.get(selectedPort);
-        if (port)
-            statusBarItem.text = `🟢 DayZ ${ports.size} ports (${port.displayPeerType()}, PID ${port.pid})`;
+        if (port) {
+            if (ports.size == 1)
+                statusBarItem.text = `🟢 DayZ ${ports.size} port (${port.displayPeerType()}, PID ${port.pid})`;
+            else
+                statusBarItem.text = `🟢 DayZ ${ports.size} ports (${port.displayPeerType()}, PID ${port.pid})`;
+        }
         else
             statusBarItem.text = `🟢 DayZ ${ports.size} ports`;
         statusBarItem.tooltip = "Click to choose target DayZ Debug Port";
