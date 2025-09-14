@@ -12,3 +12,4 @@ python/build/
 python/dist/
 python/dzdbgport.spec
 python/.build_hash
+dzdbgport.log
