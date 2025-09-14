@@ -796,11 +796,19 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
         self.server = server
         self.ports: dict[int, DayZDebugPort] = dict()
 
-    @property
-    def current_port(self) -> DayZDebugPort:
-        if not self.ports:
-            raise ValueError("Game port not connected")
-        return next(iter(self.ports.values()))
+    def get_one_port(self, tcp_port: int | None) -> DayZDebugPort:
+        if not self.ports or (tcp_port is not None and tcp_port not in self.ports):
+            raise ValueError("Game port not connected" + "" if tcp_port is None else f" (tcp_port {tcp_port})")
+        if tcp_port is None:
+            return next(iter(self.ports.values()))
+        return self.ports[tcp_port]
+
+    def get_ports(self, tcp_port: int | None) -> list[DayZDebugPort]:
+        if not self.ports or (tcp_port is not None and tcp_port not in self.ports):
+            return []
+        if tcp_port is not None:
+            return [self.ports[tcp_port]]
+        return list(self.ports.values())
 
     async def _send_or_broadcast(self, websocket: websockets.ServerConnection | None, message_json: dict):
         message = json.dumps(message_json)
@@ -809,37 +817,49 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
         else:
             await self.server.broadcast(message)
 
-    async def _send_ws_connect(self, websocket: websockets.ServerConnection | None, game_pid: int, peer_type: str):
+    async def _send_ws_connect(self, websocket: websockets.ServerConnection | None, port: DayZDebugPort):
         await self._send_or_broadcast(websocket, {
             "type": "connect",
-            "pid": game_pid,
-            "peer_type": peer_type,
+            "pid": port.pid,
+            "tcp_port": port.addr[1],
+            "peer_type": port.peer_type,
         })
     
-    async def _send_ws_disconnect(self, websocket: websockets.ServerConnection | None, game_pid: int, reason: str):
+    async def _send_ws_disconnect(self, websocket: websockets.ServerConnection | None, port: DayZDebugPort, reason: str):
        await self._send_or_broadcast(websocket, {
             "type": "disconnect",
-            "pid": game_pid,
+            "pid": port.pid,
+            "tcp_port": port.addr[1],
+            "peer_type": port.peer_type,
             "reason": reason,
         })
     
-    async def _send_ws_block_load(self, websocket: websockets.ServerConnection | None, block_id: int, filenames: list[str]):
+    async def _send_ws_block_load(self, websocket: websockets.ServerConnection | None, port: DayZDebugPort, block_id: int, filenames: list[str]):
         await self._send_or_broadcast(websocket, {
             "type": "block_load",
+            "pid": port.pid,
+            "tcp_port": port.addr[1],
+            "peer_type": port.peer_type,
             "block_id": block_id,
             "filenames": filenames,
         })
     
-    async def _send_ws_block_unload(self, websocket: websockets.ServerConnection | None, block_id: int, filenames: list[str]):
+    async def _send_ws_block_unload(self, websocket: websockets.ServerConnection | None, port: DayZDebugPort, block_id: int, filenames: list[str]):
         await self._send_or_broadcast(websocket, {
             "type": "block_unload",
+            "pid": port.pid,
+            "tcp_port": port.addr[1],
+            "peer_type": port.peer_type,
             "block_id": block_id,
             "filenames": filenames,
         })
     
-    async def _send_ws_log(self, websocket: websockets.ServerConnection | None, data: str):
+    async def _send_ws_log(self, websocket: websockets.ServerConnection | None, port: DayZDebugPort, data: str):
         await self._send_or_broadcast(websocket, {
             "type": "log",
+            "pid": port.pid,
+            "tcp_port": port.addr[1],
+            "peer_type": port.peer_type,
             "data": data,
         })
     
@@ -855,13 +875,16 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
     async def _receive_ws(self, websocket: websockets.ServerConnection, type: str, message_json: dict):
         match type:
             case "execCode":
-                logging.info("got execCode from websocket")
-                await self.current_port.exec_code(module=message_json["module"], code=message_json["code"])
+                logging.info(f"got execCode from websocket (tcp_port={message_json.get("tcp_port")})")
+                target_port = self.get_one_port(message_json.get("tcp_port"))
+                await target_port.exec_code(module=message_json["module"], code=message_json["code"])
             case "recompile":
                 filename = message_json["filename"]
-                block, index = self.current_port.find_block_and_index_for_filename(filename)
-                logging.info(f"recompiling filename \"{filename}\" at block {hex(block.block_id)} index {index}")
-                await self.current_port.recompile(block.block_id, index)
+                logging.info(f"got recompile from websocket (filename=\"{filename}\", tcp_port={message_json.get("tcp_port")})")
+                target_ports = self.get_ports(message_json.get("tcp_port"))
+                for target_port in target_ports:
+                    block, index = target_port.find_block_and_index_for_filename(filename)
+                    await target_port.recompile(block.block_id, index)
             case _:
                 raise ValueError(f"unknown message type \"{type}\"")
 
@@ -874,19 +897,18 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
     async def on_port_disconnected(self, port: DayZDebugPort):
         tcp_port = port.addr[1]
         if tcp_port not in self.ports:
-            logging.warning(f"unknown game port {tcp_port} disconnected")
             return
 
         del self.ports[tcp_port]
         # did not send exit, probably crashed
-        await self._send_ws_disconnect(None, port.pid, "crash")
+        await self._send_ws_disconnect(None, port, "crash")
 
     async def on_port_message(self, port: DayZDebugPort, msg: DZBaseMsg):
         match msg:
             case DZHelloMsg():
-                await self._send_ws_connect(None, msg.game_pid, port.peer_type)
+                await self._send_ws_connect(None, port)
             case DZExitMsg():
-                await self._send_ws_disconnect(None, port.pid, "exit")
+                await self._send_ws_disconnect(None, port, "exit")
                 tcp_port = port.addr[1]
                 if tcp_port not in self.ports:
                     logging.warning(f"unknown game port {tcp_port} exited")
@@ -894,19 +916,19 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
 
                 del self.ports[tcp_port]
             case DZBlockLoadMsg():
-                await self._send_ws_block_load(None, msg.block_id, msg.filenames)
+                await self._send_ws_block_load(None, port, msg.block_id, msg.filenames)
             case DZBlockUnloadMsg():
-                await self._send_ws_block_unload(None, msg.block_id, msg.filenames)
+                await self._send_ws_block_unload(None, port, msg.block_id, msg.filenames)
             case DZLogMsg():
-                await self._send_ws_log(None, msg.data)
+                await self._send_ws_log(None, port, msg.data)
 
     async def on_websocket_connected(self, websocket: websockets.ServerConnection):
         for port in self.ports.values():
             if port.pid != -1:
                 # TODO: maybe port needs to be locked to avoid races with game disconnect / code load / code unload notifications from the port
-                await self._send_ws_connect(websocket, port.pid, port.peer_type)
+                await self._send_ws_connect(websocket, port)
                 for block in port.blocks.values():
-                    await self._send_ws_block_load(websocket, block.block_id, block.filenames)
+                    await self._send_ws_block_load(websocket, port, block.block_id, block.filenames)
 
     async def on_websocket_disconnected(self, websocket: websockets.ServerConnection):
         print("wsdc")
@@ -1104,19 +1126,17 @@ async def main():
         try:
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
-            # Cancel all tasks still running
-            for task in pending:
-                task.cancel()
-            
-            shutdown_evt.set()
-
             # Propagate any exceptions
             for task in done:
                 await task
-            
 
         except asyncio.CancelledError:
             logging.info("Server shutdown requested via Ctrl+C")
+        finally:
+            # grace exit
+            for task in tasks:
+                task.cancel()
+            shutdown_evt.set()
 
 
 if __name__ == "__main__":
