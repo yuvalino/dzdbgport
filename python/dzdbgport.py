@@ -896,7 +896,10 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
                 logging.info(f"got recompile from websocket (filename=\"{filename}\", tcp_port={message_json.get("tcp_port")})")
                 target_ports = self.get_ports(message_json.get("tcp_port"))
                 for target_port in target_ports:
-                    block, index = target_port.find_block_and_index_for_filename(filename)
+                    try:
+                        block, index = target_port.find_block_and_index_for_filename(filename)
+                    except ValueError:
+                        logging.info(f"could not find filename \"{filename}\" for tcp_port={target_port.addr[1]}")
                     await target_port.recompile(block.block_id, index)
             case _:
                 raise ValueError(f"unknown message type \"{type}\"")
