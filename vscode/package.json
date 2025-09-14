@@ -48,6 +48,10 @@
             {
                 "command": "dzdbgport.recompileFile",
                 "title": "DayZ Debug Port: Recompile File in DayZ"
+            },
+            {
+                "command": "dzdbgport.selectTargetPort",
+                "title": "DayZ Debug Port: Select Target Port"
             }
         ],
         "views": {

@@ -6,14 +6,62 @@ import WebSocket from "ws";
 
 const logFilePath = path.join(os.tmpdir(), 'dzdbgport.log');
 
+class DayZDebugPort {
+    tcpPort: number;
+    loadedFiles: Set<string>;
+    pid: number;
+    peerType: string;
+
+    constructor(
+        tcpPort: number,
+        pid: number,
+        peerType: string,
+        loadedFiles: Iterable<string> = [],
+    ) {
+        this.tcpPort = tcpPort;
+        this.loadedFiles = new Set(loadedFiles);
+        this.pid = pid;
+        this.peerType = peerType;
+    }
+
+    addFile(file: string): void {
+        this.loadedFiles.add(file);
+    }
+
+    removeFile(file: string): void {
+        this.loadedFiles.delete(file);
+    }
+
+    info(): string {
+        return `PID: ${this.pid}, Port: ${this.tcpPort}, Type: ${this.peerType}, Loaded Files Count: ${this.loadedFiles.size}`;
+    }
+
+    displayPeerType(): string {
+        if (this.peerType === "S")
+            return "Server";
+        if (this.peerType === "C")
+            return "Client";
+        return this.peerType;
+    }
+    logPeerType(): string {
+        if (this.peerType === "S")
+            return " S";
+        if (this.peerType === "C")
+            return "C ";
+        return this.peerType;
+    }
+}
+
+
 let socket: WebSocket | null = null;
 let outputChannel: vscode.OutputChannel;
 let gameLogChannel: vscode.OutputChannel;
-let gameConnected = false;
 let execCodeViewProvider: ExecCodeViewProvider;
 let decorationProvider: LoadedFileDecorationProvider;
 let statusBarItem: vscode.StatusBarItem;
-const loadedFiles = new Set<string>();
+const loadedFiles = new Map<string, number>();
+const ports = new Map<number, DayZDebugPort>();
+let selectedPort = -1;
 let activeConnectPromise: Promise<boolean> | null = null;
 
 let isDisconnecting = false;
@@ -28,10 +76,11 @@ function logPort(msg: string, end: string = "\n") {
     outputChannel.append(`[dbgport] ${msg}${end}`)
 }
 
-function clearLoadedFiles(): void {
+function clearData(): void {
+    ports.clear();
     loadedFiles.clear();
     decorationProvider.notifyChange();
-    logPlugin("[WS] Cleared loaded file list");
+    logPlugin("[WS] Cleared data");
 }
 
 interface PluginConfig {
@@ -51,20 +100,34 @@ function updateStatusBarItem() {
     const enabled = pluginConfig().enableDebugPort;
 
     if (!enabled) {
-        statusBarItem.text = "🔴 DayZ";
+        statusBarItem.text = "🔴 DayZ (Off)";
         statusBarItem.tooltip = "Click to enable DayZ Debug Port";
-    } else if (gameConnected) {
-        statusBarItem.text = "🟢 DayZ";
-        statusBarItem.tooltip = "Click to disable DayZ Debug Port (Game Connected)";
+        statusBarItem.command = "dzdbgport.toggleDebugPort";
+    } else if (ports.size) {
+        let port = ports.get(selectedPort);
+        if (port)
+            statusBarItem.text = `🟢 DayZ (${ports.size} ports, target=${port.pid} [${port.displayPeerType()}])`;
+        else
+            statusBarItem.text = `🟢 DayZ (${ports.size} ports, target=null)`;
+        statusBarItem.tooltip = "Click to choose target DayZ Debug Port";
+        statusBarItem.command = "dzdbgport.selectTargetPort";
     } else {
-        statusBarItem.text = "🟡 DayZ";
-        statusBarItem.tooltip = "Click to disable DayZ Debug Port (No Game Connected)";
+        statusBarItem.text = `🟡 DayZ (${ports.size} ports)`;
+        statusBarItem.tooltip = "Click to choose target DayZ Debug Port (No Game Connected)";
+        statusBarItem.command = "dzdbgport.selectTargetPort";
     }
 
-    statusBarItem.command = "dzdbgport.toggleDebugPort";
+    
 }
 
 function updateStatusBarVisibility() {
+
+    // if any instance is connected, always show
+    if (ports.size) {
+        statusBarItem.show();
+        return;
+    }
+
     const editor = vscode.window.activeTextEditor;
     const supportedLanguages = ["c", "enscript", "des"];
 
@@ -77,6 +140,50 @@ function updateStatusBarVisibility() {
     }
 }
 
+async function pickTargetPort(): Promise<void> {
+    if (!pluginConfig().enableDebugPort) {
+        await toggleDebugPort();
+        return;
+    }
+
+    if (ports.size === 0) {
+        vscode.window.showWarningMessage("No game ports detected.");
+        return;
+    }
+
+    const allPorts = [...ports.values()]
+        .sort((a, b) => a.tcpPort - b.tcpPort);
+
+    // If we already have a selected port, put it first
+    const sorted = selectedPort !== -1
+        ? allPorts.sort((a, b) => {
+            if (a.tcpPort === selectedPort) return -1;
+            if (b.tcpPort === selectedPort) return 1;
+            return a.tcpPort - b.tcpPort;
+        })
+        : allPorts;
+
+    const items = sorted.map(p => ({
+        label: `${p.tcpPort}`,
+        description: `${p.displayPeerType()} · PID ${p.pid}`,
+        value: p.tcpPort
+    }));
+
+    const picked = await vscode.window.showQuickPick(items, {
+        title: "Select Target Port",
+        placeHolder: "Choose the DayZ target port",
+        matchOnDescription: true,
+        canPickMany: false
+    });
+
+    if (!picked) return;
+
+    selectedPort = picked.value;
+    updateStatusBarItem();
+    updateExecButtonState();
+}
+
+
 function webviewPostMessage(message: any) {
     if (execCodeViewProvider && execCodeViewProvider.view) {
         execCodeViewProvider.view.webview.postMessage(message);
@@ -84,7 +191,7 @@ function webviewPostMessage(message: any) {
 }
 
 function updateExecButtonState() {
-    const enabled = (socket && socket.readyState === WebSocket.OPEN && gameConnected);
+    const enabled = (socket && socket.readyState === WebSocket.OPEN && ports.get(selectedPort));
     webviewPostMessage({ type: "executeEnabled", enabled: enabled });
 }
 
@@ -112,22 +219,84 @@ function sendWebSocketMessage(msg: any): boolean {
     return false;
 }
 
+function selectNextPort() {
+    selectedPort = ports.keys().next().value ?? -1;
+}
+
+function addLoadedFile(file: string) {
+    const current = loadedFiles.get(file);
+    if (!current)
+        loadedFiles.set(file, 1)
+    else
+        loadedFiles.set(file, current + 1)
+}
+
+function removeLoadedFile(file: string) {
+    const current = loadedFiles.get(file);
+    if (!current || current < 2)
+        loadedFiles.delete(file)
+    else
+        loadedFiles.set(file, current - 1)
+}
+
+function removePort(port: DayZDebugPort) {
+    if (!ports.delete(port.tcpPort))
+        return;
+
+    for (const file of port.loadedFiles) {
+        removeLoadedFile(file);
+    }
+
+    if (selectedPort === port.tcpPort)
+        selectNextPort();
+}
+
+function addPort(port: DayZDebugPort) {
+    let old_port = ports.get(port.tcpPort)
+    if (old_port) {
+        logPlugin(`[WS] Game port already connected (tcpPort: ${old_port.tcpPort})`);
+        removePort(old_port);
+    }
+
+    for (const file of port.loadedFiles) {
+        addLoadedFile(file);
+    }
+
+    ports.set(port.tcpPort, port);
+
+    if (selectedPort === -1)
+        selectNextPort();
+}
+
 function onWebSocketMessage(msg: any) {
     if (msg.type === "connect") {
-        logPlugin(`[WS] Game connected (pid: ${msg.pid})`);
+        let port = new DayZDebugPort(
+            msg.tcp_port ?? msg.pid,
+            msg.pid,
+            msg.peer_type ?? "C"
+        )
 
-        gameConnected = true;
+        addPort(port);
+
+        logPlugin(`[WS] Game connected (${port.displayPeerType()}, TCP:${port.tcpPort}, PID:${port.pid})`);
+
         updateExecButtonState();
         updateStatusBarItem();
+        updateStatusBarVisibility();
 
-        vscode.window.showInformationMessage(`🟢 DayZ Game Connected (PID: ${msg.pid})`);
+        vscode.window.showInformationMessage(`🟢 DayZ Game Connected (${port.displayPeerType()}, PID: ${port.pid})`);
     } else if (msg.type === "disconnect") {
-        logPlugin(`[WS] Game disconnected (pid: ${msg.pid}, reason: ${msg.reason})`);
+        let tcpPort = msg.tcp_port ?? msg.pid;
+        logPlugin(`[WS] Game disconnected (pid: ${msg.pid}, tcpPort: ${tcpPort}, reason: ${msg.reason})`);
 
-        gameConnected = false;
+        let port = ports.get(tcpPort);
+        if (port)
+        {
+            removePort(port)
+        }
         updateExecButtonState();
         updateStatusBarItem();
-        clearLoadedFiles();
+        updateStatusBarVisibility();
 
         if (msg.reason === "exit") {
             vscode.window.showInformationMessage(`🟡 DayZ Game Disconnected (PID: ${msg.pid})`);
@@ -140,31 +309,59 @@ function onWebSocketMessage(msg: any) {
         }
     }
     else if (msg.type === "block_load") {
-        if (msg.filenames.length == 1 && msg.filenames[0] === "execCode") {
+        if (msg.filenames.length === 1 && msg.filenames[0] === "execCode") {
             logPlugin(`[WS] Code executed successfully (id 0x${msg.block_id.toString(16)})`);
             return;
         }
 
-        logPlugin(`[WS] Block loaded (id 0x${msg.block_id.toString(16)}, ${msg.filenames.length} files)`)
-        for (const file of msg.filenames) {
-            loadedFiles.add(file);
-        }
-        decorationProvider.notifyChange();
-    }
-    else if (msg.type === "block_unload") {
-        if (msg.filenames.length == 1 && msg.filenames[0] === "execCode") {
+        let tcpPort = msg.tcp_port ?? selectedPort;
+
+        logPlugin(`[WS] Block loaded (tcpPort ${tcpPort} id 0x${msg.block_id.toString(16)}, ${msg.filenames.length} files)`)
+
+        let port = ports.get(tcpPort);
+        if (!port) {
+            logPlugin(`[WS] WARNING: Invalid port ${tcpPort}`)
             return;
         }
 
-        logPlugin(`[WS] Block unloaded (id 0x${msg.block_id.toString(16)}, ${msg.filenames.length} files)`)
         for (const file of msg.filenames) {
-            loadedFiles.delete(file);
+            port.addFile(file)
+            addLoadedFile(file);
+        }
+
+        decorationProvider.notifyChange();
+    }
+    else if (msg.type === "block_unload") {
+        if (msg.filenames.length === 1 && msg.filenames[0] === "execCode") {
+            return;
+        }
+
+        let tcpPort = msg.tcp_port ?? selectedPort;
+
+        logPlugin(`[WS] Block unloaded (tcpPort ${tcpPort} id 0x${msg.block_id.toString(16)}, ${msg.filenames.length} files)`)
+
+        let port = ports.get(tcpPort);
+        if (!port) {
+            logPlugin(`[WS] WARNING: Invalid port ${tcpPort}`)
+            return;
+        }
+
+        for (const file of msg.filenames) {
+            port.removeFile(file);
+            removeLoadedFile(file);
         }
         decorationProvider.notifyChange();
     }
     else if (msg.type === "log") {
+        let prefix = ""
         const text = msg.data;
-        gameLogChannel.append(text.endsWith('\n') ? text : text + '\n');
+
+        let port = ports.get(msg.tcp_port);
+        if (port) {
+            prefix = `[${String(port.pid).padEnd(5, "")} ${port.logPeerType()}] `
+        }
+
+        gameLogChannel.append(prefix + (text.endsWith('\n') ? text : text + '\n'));
     }
     else if (msg.type === "output") {
         const text = msg.data;
@@ -197,10 +394,10 @@ function tryConnectWebSocket(maxWaitMs: number): Promise<boolean> {
             ws.onopen = () => {
                 logPlugin("[WS] Connected to server.");
                 socket = ws;
-                gameConnected = false;
+                clearData();
                 updateExecButtonState();
                 updateStatusBarItem();
-                clearLoadedFiles();
+                updateStatusBarVisibility();
 
                 ws.onmessage = (event) => {
                     const raw = event.data;
@@ -211,10 +408,10 @@ function tryConnectWebSocket(maxWaitMs: number): Promise<boolean> {
 
                 ws.onclose = () => {
                     socket = null;
-                    gameConnected = false;
+                    clearData();
                     updateExecButtonState();
                     updateStatusBarItem();
-                    clearLoadedFiles();
+                    updateStatusBarVisibility();
 
                     // clear out disconnect timeout
                     if (disconnectTimeout) {
@@ -351,11 +548,15 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
                     return;
                 }
 
-                if (sendWebSocketMessage({ type: "execCode", module: module, code: code })) {
+                let port = ports.get(selectedPort);
+                if (!port) {
+                    vscode.window.showErrorMessage("❌ Cannot execute code: Game is not connected.");
+                }
+                else if (sendWebSocketMessage({ tcp_port: port.tcpPort, type: "execCode", module: module, code: code })) {
                     vscode.window.showInformationMessage(`🚀 Executing code (${module})...`);
                 }
                 else {
-                    vscode.window.showErrorMessage("❌ Cannot execute code: Game is not connected.");
+                    vscode.window.showErrorMessage("❌ Cannot execute code: Socket error.");
                 }
             }
         });
@@ -373,7 +574,7 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
                 { value: "Core",    label: "1_Core" },
                 { value: "GameLib", label: "2_GameLib" },
                 { value: "Game",    label: "3_Game" },
-                { value: "World",   label: "4_World" }, // not really sure any other type is supported
+                { value: "World",   label: "4_World" },
                 { value: "Mission", label: "5_Mission" },
             ]
         });
@@ -554,7 +755,7 @@ class LoadedFileDecorationProvider implements vscode.FileDecorationProvider {
         const dataPath = pluginConfig().dataPath;
         const possibleMatches = new Set<string>();
 
-        for (const rawPath of loadedFiles) {
+        for (const rawPath of loadedFiles.keys()) {
             const resolved = path.isAbsolute(rawPath)
                 ? path.normalize(rawPath).toLowerCase()
                 : path.resolve(dataPath, rawPath).toLowerCase();
@@ -585,7 +786,7 @@ function findLoadedFileForUri(uri: vscode.Uri): string | null {
     const input = path.normalize(uri.fsPath).toLowerCase();
     const dataPath = pluginConfig().dataPath;
 
-    for (const rawPath of loadedFiles) {
+    for (const rawPath of loadedFiles.keys()) {
         const cleaned = path.normalize(rawPath.replace(/\//g, path.sep));
         const full = path.isAbsolute(cleaned)
             ? cleaned
@@ -654,12 +855,12 @@ async function dumpDiag(context: vscode.ExtensionContext) {
     lines.push(`timestamp: ${new Date().toISOString()}`);
     lines.push(`config.enableDebugPort: ${pluginConfig().enableDebugPort}`)
     lines.push(`config.dataPath: ${pluginConfig().dataPath}`);
-    lines.push(`gameConnected: ${gameConnected}`);
+    lines.push(`ports: ${[...ports.keys()]}`);
     lines.push(`loadedFiles.size: ${loadedFiles.size}`)
     if (loadedFiles.size > 0) {
         lines.push(`loadedFiles:`);
-        for (const file of Array.from(loadedFiles).sort()) {
-            lines.push(`- name: ${file}`);
+        for (const [file, count] of Array.from(loadedFiles.entries()).sort()) {
+            lines.push(`- name: ${file} (count: ${count})`);
         }
     }
 
@@ -726,8 +927,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
             const loadedFile = findLoadedFileForUri(uri);
             if (!loadedFile) {
-                logPlugin(`Cannot recompile file ${uri.fsPath} because it isn't loaded by the game`);
-                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}": Not loaded by the game`);
+                logPlugin(`Cannot recompile file ${uri.fsPath} because it isn't loaded by any game instance`);
+                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}": Not loaded by any game instance`);
                 return;
             }
             
@@ -736,10 +937,14 @@ export async function activate(context: vscode.ExtensionContext) {
                 vscode.window.showInformationMessage(`🛠️ Recompiling "${path.basename(uri.fsPath)}"...`);
             }
             else {
-                logPlugin(`Could not recompile ${uri.fsPath}, game not connected`);
-                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}": Game is not connected.`);
+                logPlugin(`Could not recompile ${uri.fsPath}, socket error`);
+                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}": Socket error.`);
             }
-        })
+        }),
+
+        vscode.commands.registerCommand("dzdbgport.selectTargetPort", async () => {
+            await pickTargetPort();
+        }),
     );
 
     execCodeViewProvider = new ExecCodeViewProvider(context.extensionUri);
