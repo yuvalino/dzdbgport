@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import asyncio
 import logging
 import struct
@@ -56,6 +57,11 @@ LOGFILE = Path(".") / "dayzdebug.log"
 
 PEERTYPE_CLIENT = "C"
 PEERTYPE_SERVER = "S"
+
+
+# major/minor/hotfix
+VERSION = [0,3,0]
+
 
 task_prefix = ContextVar("task_prefix", default="")
 
@@ -817,6 +823,13 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
         else:
             await self.server.broadcast(message)
 
+    async def _send_ws_hello(self, websocket: websockets.ServerConnection | None):
+        await self._send_or_broadcast(websocket, {
+            "type": "hello",
+            "version": VERSION,
+            "pid": os.getpid(),
+        })
+
     async def _send_ws_connect(self, websocket: websockets.ServerConnection | None, port: DayZDebugPort):
         await self._send_or_broadcast(websocket, {
             "type": "connect",
@@ -923,6 +936,7 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
                 await self._send_ws_log(None, port, msg.data)
 
     async def on_websocket_connected(self, websocket: websockets.ServerConnection):
+        await self._send_ws_hello(websocket)
         for port in self.ports.values():
             if port.pid != -1:
                 # TODO: maybe port needs to be locked to avoid races with game disconnect / code load / code unload notifications from the port
