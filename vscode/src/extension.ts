@@ -96,6 +96,25 @@ function pluginConfig(): PluginConfig {
     };
 }
 
+function showNotification(message: string, duration: number) {
+  vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification },
+    async (progress) => {
+      const steps = 100;
+      const delay = duration / steps;
+
+      for (let i = 0; i <= steps; i++) {
+        await new Promise<void>((resolve) => {
+          setTimeout(() => {
+            progress.report({ increment: 1, message: message });
+            resolve();
+          }, delay);
+        });
+      }
+    }
+  );
+}
+
 function updateStatusBarItem() {
     const enabled = pluginConfig().enableDebugPort;
 
@@ -106,13 +125,13 @@ function updateStatusBarItem() {
     } else if (ports.size) {
         let port = ports.get(selectedPort);
         if (port)
-            statusBarItem.text = `🟢 DayZ (${ports.size} ports, target=${port.pid} [${port.displayPeerType()}])`;
+            statusBarItem.text = `🟢 DayZ ${ports.size} ports (${port.displayPeerType()}, PID ${port.pid})`;
         else
-            statusBarItem.text = `🟢 DayZ (${ports.size} ports, target=null)`;
+            statusBarItem.text = `🟢 DayZ ${ports.size} ports`;
         statusBarItem.tooltip = "Click to choose target DayZ Debug Port";
         statusBarItem.command = "dzdbgport.selectTargetPort";
     } else {
-        statusBarItem.text = `🟡 DayZ (${ports.size} ports)`;
+        statusBarItem.text = `🟡 DayZ ${ports.size} ports`;
         statusBarItem.tooltip = "Click to choose target DayZ Debug Port (No Game Connected)";
         statusBarItem.command = "dzdbgport.selectTargetPort";
     }
@@ -146,11 +165,6 @@ async function pickTargetPort(): Promise<void> {
         return;
     }
 
-    if (ports.size === 0) {
-        vscode.window.showWarningMessage("No game ports detected.");
-        return;
-    }
-
     const allPorts = [...ports.values()]
         .sort((a, b) => a.tcpPort - b.tcpPort);
 
@@ -164,8 +178,8 @@ async function pickTargetPort(): Promise<void> {
         : allPorts;
 
     const items = sorted.map(p => ({
-        label: `${p.tcpPort}`,
-        description: `${p.displayPeerType()} · PID ${p.pid}`,
+        label: `PID ${p.pid}`,
+        description: `${p.displayPeerType()}`,
         value: p.tcpPort
     }));
 
@@ -181,6 +195,10 @@ async function pickTargetPort(): Promise<void> {
     selectedPort = picked.value;
     updateStatusBarItem();
     updateExecButtonState();
+
+    let port = ports.get(selectedPort);
+    if (port)
+        showNotification(`🎯 Selected port PID ${port.pid} (${port.displayPeerType()})`, 5000);
 }
 
 
@@ -284,7 +302,7 @@ function onWebSocketMessage(msg: any) {
         updateStatusBarItem();
         updateStatusBarVisibility();
 
-        vscode.window.showInformationMessage(`🟢 DayZ Game Connected (${port.displayPeerType()}, PID: ${port.pid})`);
+        showNotification(`🟢 DayZ Game Connected (${port.displayPeerType()}, PID: ${port.pid})`, 5000);
     } else if (msg.type === "disconnect") {
         let tcpPort = msg.tcp_port ?? msg.pid;
         logPlugin(`[WS] Game disconnected (pid: ${msg.pid}, tcpPort: ${tcpPort}, reason: ${msg.reason})`);
@@ -299,13 +317,13 @@ function onWebSocketMessage(msg: any) {
         updateStatusBarVisibility();
 
         if (msg.reason === "exit") {
-            vscode.window.showInformationMessage(`🟡 DayZ Game Disconnected (PID: ${msg.pid})`);
+            showNotification(`🟡 DayZ Game Disconnected (PID: ${msg.pid})`, 5000);
         }
         else if (msg.reason === "crash") {
-            vscode.window.showWarningMessage(`🔴 DayZ Game Crashed (PID: ${msg.pid})`);
+            showNotification(`🔴 DayZ Game Crashed (PID: ${msg.pid})`, 5000);
         }
         else {
-            vscode.window.showWarningMessage(`🔴 DayZ Game Unknown Exit Reason (PID: ${msg.pid}, Reason: ${msg.reason})`);
+            showNotification(`🔴 DayZ Game Unknown Exit Reason (PID: ${msg.pid}, Reason: ${msg.reason})`, 5000);
         }
     }
     else if (msg.type === "block_load") {
@@ -550,10 +568,10 @@ export class ExecCodeViewProvider implements vscode.WebviewViewProvider {
 
                 let port = ports.get(selectedPort);
                 if (!port) {
-                    vscode.window.showErrorMessage("❌ Cannot execute code: Game is not connected.");
+                    showNotification("❌ Cannot execute code: Game is not connected.", 5000);
                 }
                 else if (sendWebSocketMessage({ tcp_port: port.tcpPort, type: "execCode", module: module, code: code })) {
-                    vscode.window.showInformationMessage(`🚀 Executing code (${module})...`);
+                    showNotification(`🚀 Executing code (${module})...`, 5000);
                 }
                 else {
                     vscode.window.showErrorMessage("❌ Cannot execute code: Socket error.");
@@ -805,10 +823,10 @@ async function toggleDebugPort()
     const targetState = !config.get<boolean>("enableDebugPort", true);
     await config.update("enableDebugPort", targetState, vscode.ConfigurationTarget.Global);
     if (targetState) {
-        vscode.window.showInformationMessage(`🟢 DayZ Debug Port Enabled`);
+        showNotification(`🟢 DayZ Debug Port Enabled`, 5000);
     }
     else {
-        vscode.window.showInformationMessage(`🔴 DayZ Debug Port Disabled`);
+        showNotification(`🔴 DayZ Debug Port Disabled`, 5000);
     }
 }
 
@@ -928,17 +946,17 @@ export async function activate(context: vscode.ExtensionContext) {
             const loadedFile = findLoadedFileForUri(uri);
             if (!loadedFile) {
                 logPlugin(`Cannot recompile file ${uri.fsPath} because it isn't loaded by any game instance`);
-                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}": Not loaded by any game instance`);
+                showNotification(`❌ Cannot recompile "${path.basename(uri.fsPath)}": Not loaded by any game instance`, 5000);
                 return;
             }
             
             if (sendWebSocketMessage({ type: "recompile", filename: loadedFile })) {
                 logPlugin(`Recompiling ${uri.fsPath}`);
-                vscode.window.showInformationMessage(`🛠️ Recompiling "${path.basename(uri.fsPath)}"...`);
+                showNotification(`🛠️ Recompiling "${path.basename(uri.fsPath)}"...`, 5000);
             }
             else {
                 logPlugin(`Could not recompile ${uri.fsPath}, socket error`);
-                vscode.window.showErrorMessage(`❌ Cannot recompile "${path.basename(uri.fsPath)}": Socket error.`);
+                vscode.window.showErrorMessage(`❌ Cannot recompile: Socket error.`);
             }
         }),
 
