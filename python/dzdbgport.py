@@ -1039,24 +1039,36 @@ async def main():
         listener = DayZDebugWebSocketServer(server)
         setup_logging(False, log_file=args.log_file, dzws=listener)
         server.add_listener(listener)
-        tasks.append(server.run())
+        tasks.append(asyncio.create_task(server.run()))
     else:
         setup_logging(True, log_file=args.log_file, dzws=None)
         console = ConsoleInterface()
         listener = DayZDebugConsole(console)
-        tasks.append(console.run())
+        tasks.append(asyncio.create_task(console.run()))
 
     server = await asyncio.start_server(lambda r, w: handle_client(r, w, listener=listener, log_dir=args.sniff_dir), "0.0.0.0", DZDEBUGPORT)
-    tasks.append(server.serve_forever())
+    tasks.append(asyncio.create_task(server.serve_forever()))
 
     if args.mock:
-        tasks.append(mock_client())
+        async def _mock_wrapper():
+            await mock_client()
+            await asyncio.Future()
+        tasks.append(asyncio.create_task(_mock_wrapper()))
 
     logging.info(f"Listening on port {DZDEBUGPORT}")
 
     async with server:
         try:
-            await asyncio.gather(*tasks)
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+            # Cancel all tasks still running
+            for task in pending:
+                task.cancel()
+
+            # Propagate any exceptions
+            for task in done:
+                await task
+
         except asyncio.CancelledError:
             logging.info("Server shutdown requested via Ctrl+C")
 
