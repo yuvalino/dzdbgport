@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dzdbgport"
-version = "0.2.2"
+version = "0.3.0"
 description = "Unofficial DayZ debugging tool for VSCode and development package in Python."
 authors = ["Yuval <yuvalino@gmail.com>"]
 readme = "README.md"

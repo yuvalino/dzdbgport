@@ -2,7 +2,7 @@
     "name": "dzdbgport",
     "displayName": "DayZ Debug Port",
     "description": "A debugging plugin for DayZ modding",
-    "version": "0.2.2",
+    "version": "0.3.0",
     "publisher": "yuval",
     "icon": "media/logo.png",
     "categories": [
