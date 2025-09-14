@@ -4,6 +4,9 @@ import * as path from "path";
 import * as os from 'os';
 import WebSocket from "ws";
 
+import * as fs from "fs";
+import * as crypto from "crypto";
+
 const logFilePath = path.join(os.tmpdir(), 'dzdbgport.log');
 
 class DayZDebugPort {
@@ -66,7 +69,6 @@ let activeConnectPromise: Promise<boolean> | null = null;
 
 let isDisconnecting = false;
 let disconnectTimeout: NodeJS.Timeout | null = null;
-
 
 function logPlugin(msg: string, end: string = "\n") {
     outputChannel.append(`[plugin ] ${msg}${end}`)
@@ -230,6 +232,44 @@ async function cleanupOrphanProcesses(): Promise<void> {
             resolve();
         });
     });
+}
+
+function ensureDir(p: string) {
+    if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+}
+
+function sha1File(p: string): string {
+    const h = crypto.createHash("sha1");
+    h.update(fs.readFileSync(p));
+    return h.digest("hex");
+}
+
+function ensureLocalBinary(context: vscode.ExtensionContext): string {
+    const srcExe = path.join(context.extensionPath, "bin", "dzdbgport.exe");
+    const dstDir = path.join(context.globalStorageUri.fsPath, "bin");
+    const dstExe = path.join(dstDir, "dzdbgport.exe");
+
+    ensureDir(dstDir);
+
+    let needCopy = !fs.existsSync(dstExe);
+    if (!needCopy) {
+        try {
+            needCopy = sha1File(srcExe) !== sha1File(dstExe);
+        } catch {
+            needCopy = true;
+        }
+    }
+
+    if (needCopy) {
+        try {
+            (async () => { await cleanupOrphanProcesses(); })();
+        } catch {}
+
+        fs.copyFileSync(srcExe, dstExe);
+        try { fs.chmodSync(dstExe, 0o755); } catch {}
+    }
+
+    return dstExe;
 }
 
 function sendWebSocketMessage(msg: any): boolean {
@@ -500,7 +540,7 @@ function disconnectWebSocket() {
 }
 
 function startServer(context: vscode.ExtensionContext) {
-    const exePath = path.join(context.extensionPath, "bin", "dzdbgport.exe");
+    const exePath = ensureLocalBinary(context);
     logPlugin(`[INFO] Starting server from: ${exePath} logfile at ${logFilePath}`);
 
     let serverProcess = spawn(
@@ -895,6 +935,9 @@ async function dumpDiag(context: vscode.ExtensionContext) {
 }
 
 export async function activate(context: vscode.ExtensionContext) {
+
+    ensureLocalBinary
+
     outputChannel = vscode.window.createOutputChannel("DayZ Debug Port");
     context.subscriptions.push(outputChannel);
 
