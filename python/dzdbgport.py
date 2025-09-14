@@ -647,14 +647,16 @@ class DayZDebugConsole(DayZPortListener):
             return
         
         found_selected = False
+        def _peer_type_log(port: DayZDebugPort):
+            return " S" if port.peer_type == PEERTYPE_SERVER else "C "
         for idx, port in enumerate(self._ports.values()):
             if self._selected_port == port:
-                print(f">{idx+1}. pid={port.pid}")
+                print(f">{idx+1}. [{_peer_type_log(port)}] pid={port.pid}")
                 found_selected = True
             else:
-                print(f" {idx+1}. pid={port.pid}")
+                print(f" {idx+1}. [{_peer_type_log(port)}] pid={port.pid}")
         if not found_selected and self._selected_port:
-            print(f">?. pid={port.pid}")
+            print(f">?. [{_peer_type_log(port)}] pid={port.pid}")
     
     @dzcli()
     async def cmd_select(self, args):
@@ -807,10 +809,11 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
         else:
             await self.server.broadcast(message)
 
-    async def _send_ws_connect(self, websocket: websockets.ServerConnection | None, game_pid: int):
+    async def _send_ws_connect(self, websocket: websockets.ServerConnection | None, game_pid: int, peer_type: str):
         await self._send_or_broadcast(websocket, {
             "type": "connect",
             "pid": game_pid,
+            "peer_type": peer_type,
         })
     
     async def _send_ws_disconnect(self, websocket: websockets.ServerConnection | None, game_pid: int, reason: str):
@@ -881,7 +884,7 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
     async def on_port_message(self, port: DayZDebugPort, msg: DZBaseMsg):
         match msg:
             case DZHelloMsg():
-                await self._send_ws_connect(None, msg.game_pid)
+                await self._send_ws_connect(None, msg.game_pid, port.peer_type)
             case DZExitMsg():
                 await self._send_ws_disconnect(None, port.pid, "exit")
                 tcp_port = port.addr[1]
@@ -901,7 +904,7 @@ class DayZDebugWebSocketServer(DayZPortListener, WebSocketListener):
         for port in self.ports.values():
             if port.pid != -1:
                 # TODO: maybe port needs to be locked to avoid races with game disconnect / code load / code unload notifications from the port
-                await self._send_ws_connect(websocket, port.pid)
+                await self._send_ws_connect(websocket, port.pid, port.peer_type)
                 for block in port.blocks.values():
                     await self._send_ws_block_load(websocket, block.block_id, block.filenames)
 
