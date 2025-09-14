@@ -9,6 +9,8 @@ import datetime
 import argparse
 import websockets
 
+from contextlib import AsyncExitStack
+
 from pathlib import Path
 
 from dataclasses import dataclass, field
@@ -47,7 +49,7 @@ from prompt_toolkit.shortcuts import print_formatted_text
 # 00 00 00 00
 
 
-DZDEBUGPORT = 1000
+DZDEBUGPORTS = [1000, 1001]
 WSPORT = 28051
 LOGFILE = Path(".") / "dayzdebug.log"
 
@@ -946,7 +948,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 async def mock_client(path="data.bin.txt"):
     logging.info("Running in mock mode using data.bin.txt")
 
-    r, w = await asyncio.open_connection("127.0.0.1", DZDEBUGPORT)
+    r, w = await asyncio.open_connection("127.0.0.1", DZDEBUGPORTS[0])
 
     with open(path, "rb") as f:
         while True:
@@ -1046,8 +1048,11 @@ async def main():
         listener = DayZDebugConsole(console)
         tasks.append(asyncio.create_task(console.run()))
 
-    server = await asyncio.start_server(lambda r, w: handle_client(r, w, listener=listener, log_dir=args.sniff_dir), "0.0.0.0", DZDEBUGPORT)
-    tasks.append(asyncio.create_task(server.serve_forever()))
+    servers = []
+    for port in DZDEBUGPORTS:
+        server = await asyncio.start_server(lambda r, w: handle_client(r, w, listener=listener, log_dir=args.sniff_dir), "0.0.0.0", port)
+        tasks.append(asyncio.create_task(server.serve_forever()))
+        servers.append(server)
 
     if args.mock:
         async def _mock_wrapper():
@@ -1055,9 +1060,12 @@ async def main():
             await asyncio.Future()
         tasks.append(asyncio.create_task(_mock_wrapper()))
 
-    logging.info(f"Listening on port {DZDEBUGPORT}")
+    logging.info(f"Listening on ports {DZDEBUGPORTS}")
 
-    async with server:
+    async with AsyncExitStack() as stack:
+        for server in servers:
+            await stack.enter_async_context(server)
+        
         try:
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
